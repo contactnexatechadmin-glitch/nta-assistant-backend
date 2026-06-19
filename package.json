@@ -1,0 +1,18 @@
+{
+  "name": "nta-assistant-backend",
+  "version": "1.0.0",
+  "description": "Backend WhatsApp IA pour NTA Assistant",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "body-parser": "^1.20.2",
+    "@anthropic-ai/sdk": "^0.27.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
