@@ -1,18 +1,13 @@
 import express from 'express';
 import bodyParser from 'body-parser';
-import Anthropic from '@anthropic-ai/sdk';
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-// ----- Mémoire de conversation (en mémoire, par numéro de téléphone) -----
-// Limite : cette mémoire est perdue si le serveur redémarre (tier gratuit Render
-// s'endort après inactivité). Suffisant pour les tests, à améliorer avant
-// l'arrivée d'un vrai client payant (stockage persistant).
 const conversations = new Map();
-const MAX_HISTORY = 10; // 5 derniers échanges (utilisateur + assistant)
+const MAX_HISTORY = 10;
 
 function getHistory(phone) {
   if (!conversations.has(phone)) conversations.set(phone, []);
@@ -32,6 +27,38 @@ function escapeXml(str) {
     .replace(/>/g, '&gt;');
 }
 
+async function askClaude(history) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'accept-encoding': 'identity',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 500,
+      system:
+        "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. " +
+        "Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. " +
+        "Garde le fil de la conversation en t'appuyant sur les échanges précédents.",
+      messages: history,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Claude API a répondu ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  return data.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n');
+}
+
 app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
 });
@@ -49,27 +76,14 @@ app.post('/webhook', async (req, res) => {
     addToHistory(from, 'user', incomingMsg);
     const history = getHistory(from);
 
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 500,
-      system:
-        "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. " +
-        "Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. " +
-        "Garde le fil de la conversation en t'appuyant sur les échanges précédents.",
-      messages: history,
-    });
-
-    const reply = response.content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n');
+    const reply = await askClaude(history);
 
     addToHistory(from, 'assistant', reply);
 
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
   } catch (err) {
-    console.error('Erreur Claude API:', err);
+    console.error('Erreur Claude API:', err.message);
     res.set('Content-Type', 'text/xml');
     res.send(
       '<Response><Message>Désolé, une erreur est survenue. Réessaie dans un instant.</Message></Response>'
