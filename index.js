@@ -1,8 +1,11 @@
 import express from 'express';
 import bodyParser from 'body-parser';
+import cors from 'cors';
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
+app.use(express.json());
+app.use(cors());
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -27,7 +30,7 @@ function escapeXml(str) {
     .replace(/>/g, '&gt;');
 }
 
-async function askClaude(history) {
+async function askClaude(history, systemPrompt) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -39,10 +42,7 @@ async function askClaude(history) {
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
       max_tokens: 500,
-      system:
-        "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. " +
-        "Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. " +
-        "Garde le fil de la conversation en t'appuyant sur les échanges précédents.",
+      system: systemPrompt,
       messages: history,
     }),
   });
@@ -59,10 +59,37 @@ async function askClaude(history) {
     .join('\n');
 }
 
+const SYSTEM_WHATSAPP =
+  "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. " +
+  "Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. " +
+  "Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
+
+const SYSTEM_DEMO =
+  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire.\n\n" +
+  "Tu réponds aux clients via WhatsApp avec professionnalisme, chaleur et efficacité.\n\n" +
+  "RÈGLES ABSOLUES :\n" +
+  "- Vouvoie TOUJOURS les clients (jamais de 'tu')\n" +
+  "- Réponds UNIQUEMENT en français\n" +
+  "- Sois concise mais complète (max 4-5 phrases par réponse)\n" +
+  "- Reste TOUJOURS dans le rôle de l'assistante de cette boutique\n" +
+  "- Si un client envoie un message vocal ou audio, réponds : 'Je lis uniquement les messages écrits pour le moment. N'hésitez pas à taper votre question, je vous réponds immédiatement 😊'\n\n" +
+  "INFORMATIONS DE LA BOUTIQUE :\n" +
+  "- Nom : Boutique Adjoua Mode\n" +
+  "- Localisation : Cocody, Riviera 2, Abidjan (près du carrefour Riviera 2)\n" +
+  "- Spécialité : Mode féminine — pagnes wax, robes de soirée, tenues casual, accessoires\n" +
+  "- Gamme de prix : 5 000 FCFA (accessoires) à 85 000 FCFA (robes de soirée sur mesure)\n" +
+  "- Horaires : Lundi–Samedi 8h–20h, Dimanche 10h–18h\n" +
+  "- Livraison : Abidjan entier (500–1 500 FCFA selon la commune), délai 2–4h\n" +
+  "- Commande sur mesure : disponible, délai 5–7 jours\n" +
+  "- Paiement : Wave, Orange Money, cash à la boutique\n\n" +
+  "Si un client demande à parler à quelqu'un, dis-lui que la propriétaire Mme Adjoua rappellera dès que possible.";
+
+// Route santé
 app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
 });
 
+// Route Twilio WhatsApp
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
   const from = req.body.From;
@@ -75,9 +102,7 @@ app.post('/webhook', async (req, res) => {
   try {
     addToHistory(from, 'user', incomingMsg);
     const history = getHistory(from);
-
-    const reply = await askClaude(history);
-
+    const reply = await askClaude(history, SYSTEM_WHATSAPP);
     addToHistory(from, 'assistant', reply);
 
     res.set('Content-Type', 'text/xml');
@@ -88,6 +113,27 @@ app.post('/webhook', async (req, res) => {
     res.send(
       '<Response><Message>Désolé, une erreur est survenue. Réessaie dans un instant.</Message></Response>'
     );
+  }
+});
+
+// Route démo page de vente
+app.post('/demo', async (req, res) => {
+  const { message, sessionId } = req.body;
+
+  if (!message || !sessionId) {
+    return res.status(400).json({ error: 'message et sessionId requis' });
+  }
+
+  try {
+    addToHistory(sessionId, 'user', message);
+    const history = getHistory(sessionId);
+    const reply = await askClaude(history, SYSTEM_DEMO);
+    addToHistory(sessionId, 'assistant', reply);
+
+    res.json({ reply });
+  } catch (err) {
+    console.error('Erreur démo Claude API:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
