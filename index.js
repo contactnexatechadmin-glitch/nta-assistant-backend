@@ -49,7 +49,7 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
-async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
+async function analyserEtSauvegarderMetadata(merchantId, sessionId, texteMessage) {
   try {
     const systemPromptMetadata = 
       "Tu es un agent d'analyse de données spécialisé dans le e-commerce.\n" +
@@ -98,6 +98,7 @@ async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
     const { error } = await supabase
       .from('interactions_metadata')
       .insert([{
+        merchant_id: merchantId,
         session_id: sessionId,
         intent_category: metadata.intent_category || 'autre',
         product_mentioned: metadata.product_mentioned || null,
@@ -170,12 +171,18 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'nta_dashboard_reporting.html')); 
 });
 
-// ROUTE DE REPORTING EN JSON (UTILISÉE PAR LE DASHBOARD)
+// ROUTE DE REPORTING FILTRÉE PAR MARCHAND
 app.get('/reporting', async (req, res) => {
   try {
+    const { merchant_id } = req.query;
+    if (!merchant_id) {
+      return res.status(400).json({ error: 'Paramètre merchant_id requis' });
+    }
+
     const { data: records, error } = await supabase
       .from('interactions_metadata')
       .select('*')
+      .eq('merchant_id', merchant_id)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -209,7 +216,9 @@ app.get('/reporting', async (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
-  const from = req.body.From;
+  const from = req.body.From; // Numéro du client final
+  const to = req.body.To;     // Numéro Twilio du marchand (Sert de merchant_id unique)
+  
   if (!incomingMsg || !from) { res.set('Content-Type', 'text/xml'); return res.send('<Response></Response>'); }
 
   try {
@@ -220,7 +229,9 @@ app.post('/webhook', async (req, res) => {
     }
 
     await saveMessageToSupabase(from, 'user', incomingMsg);
-    analyserEtSauvegarderMetadata(from, incomingMsg);
+    
+    // Le numéro Twilio récepteur (to) sert d'identifiant unique pour le marchand
+    analyserEtSauvegarderMetadata(to || 'default_merchant', from, incomingMsg);
 
     const history = await getHistoryFromSupabase(from);
     const reply = await askClaude(history, SYSTEM_WHATSAPP);
@@ -236,11 +247,12 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.post('/demo', async (req, res) => {
-  const { message, sessionId } = req.body;
+  const { message, sessionId, merchantId } = req.body;
+  const targetMerchant = merchantId || 'demo_merchant';
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
   try {
     await saveMessageToSupabase(sessionId, 'user', message);
-    analyserEtSauvegarderMetadata(sessionId, message);
+    analyserEtSauvegarderMetadata(targetMerchant, sessionId, message);
 
     const history = await getHistoryFromSupabase(sessionId);
     const reply = await askClaude(history, SYSTEM_DEMO);
