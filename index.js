@@ -216,8 +216,8 @@ app.get('/reporting', async (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
-  const from = req.body.From; // Numéro du client final
-  const to = req.body.To;     // Numéro Twilio du marchand (Sert de merchant_id unique)
+  const from = req.body.From; 
+  const to = req.body.To;     
   
   if (!incomingMsg || !from) { res.set('Content-Type', 'text/xml'); return res.send('<Response></Response>'); }
 
@@ -229,8 +229,6 @@ app.post('/webhook', async (req, res) => {
     }
 
     await saveMessageToSupabase(from, 'user', incomingMsg);
-    
-    // Le numéro Twilio récepteur (to) sert d'identifiant unique pour le marchand
     analyserEtSauvegarderMetadata(to || 'default_merchant', from, incomingMsg);
 
     const history = await getHistoryFromSupabase(from);
