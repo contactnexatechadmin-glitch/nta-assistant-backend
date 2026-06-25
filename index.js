@@ -17,18 +17,33 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
 
-const conversations = new Map();
 const MAX_HISTORY = 10;
 
-function getHistory(phone) {
-  if (!conversations.has(phone)) conversations.set(phone, []);
-  return conversations.get(phone);
+// Récupère l'historique depuis Supabase (les X derniers messages, triés par date)
+async function getHistoryFromSupabase(sessionId) {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('role, content')
+    .eq('session_id', sessionId)
+    .order('created_at', { ascending: true })
+    .limit(MAX_HISTORY);
+
+  if (error) {
+    console.error('Erreur récupération historique Supabase:', error.message);
+    return []; 
+  }
+  return data || [];
 }
 
-function addToHistory(phone, role, content) {
-  const history = getHistory(phone);
-  history.push({ role, content });
-  while (history.length > MAX_HISTORY) history.shift();
+// Sauvegarde un nouveau message dans l'historique Supabase
+async function saveMessageToSupabase(sessionId, role, content) {
+  const { error } = await supabase
+    .from('conversations')
+    .insert([{ session_id: sessionId, role, content }]);
+
+  if (error) {
+    console.error('Erreur sauvegarde message Supabase:', error.message);
+  }
 }
 
 function escapeXml(str) {
@@ -68,7 +83,6 @@ async function askClaude(history, systemPrompt) {
 }
 
 // Vérifie dans Supabase si un numéro WhatsApp est suspendu.
-// Retourne true si suspendu, false sinon (y compris si le client n'existe pas dans la base).
 async function estSuspendu(whatsappNumber) {
   const { data, error } = await supabase
     .from('clients')
@@ -78,10 +92,10 @@ async function estSuspendu(whatsappNumber) {
 
   if (error) {
     console.error('Erreur lecture statut Supabase:', error.message);
-    return false; // en cas d'erreur technique, on ne bloque pas le client par défaut
+    return false; 
   }
 
-  if (!data) return false; // numéro non trouvé dans la base = pas géré, on laisse passer
+  if (!data) return false; 
 
   return data.suspended === true;
 }
@@ -134,10 +148,17 @@ app.post('/webhook', async (req, res) => {
       return res.send(`<Response><Message>${escapeXml(MESSAGE_ACCES_COUPE)}</Message></Response>`);
     }
 
-    addToHistory(from, 'user', incomingMsg);
-    const history = getHistory(from);
+    // 1. Sauvegarde le message reçu du client dans Supabase
+    await saveMessageToSupabase(from, 'user', incomingMsg);
+    
+    // 2. Récupère l'historique complet (y compris le message actuel)
+    const history = await getHistoryFromSupabase(from);
+    
+    // 3. Demande la réponse à Claude
     const reply = await askClaude(history, SYSTEM_WHATSAPP);
-    addToHistory(from, 'assistant', reply);
+    
+    // 4. Sauvegarde la réponse de l'IA dans Supabase
+    await saveMessageToSupabase(from, 'assistant', reply);
 
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
@@ -159,10 +180,17 @@ app.post('/demo', async (req, res) => {
   }
 
   try {
-    addToHistory(sessionId, 'user', message);
-    const history = getHistory(sessionId);
+    // 1. Sauvegarde le message de la démo
+    await saveMessageToSupabase(sessionId, 'user', message);
+    
+    // 2. Récupère l'historique
+    const history = await getHistoryFromSupabase(sessionId);
+    
+    // 3. Interroge Claude
     const reply = await askClaude(history, SYSTEM_DEMO);
-    addToHistory(sessionId, 'assistant', reply);
+    
+    // 4. Sauvegarde la réponse
+    await saveMessageToSupabase(sessionId, 'assistant', reply);
 
     res.json({ reply });
   } catch (err) {
@@ -204,10 +232,10 @@ app.post('/clients', async (req, res) => {
   res.status(201).json({ client: data[0] });
 });
 
-// Mettre à jour un client existant (couper l'accès, réactiver, renouveler)
+// Mettre à jour un client existant
 app.patch('/clients/:whatsapp', async (req, res) => {
   const { whatsapp } = req.params;
-  const updates = req.body; // ex: { suspended: true } ou { start_date, trial, suspended }
+  const updates = req.body;
 
   const { data, error } = await supabase
     .from('clients')
@@ -244,7 +272,7 @@ app.delete('/clients/:whatsapp', async (req, res) => {
   res.status(204).send();
 });
 
-// Lister tous les clients (utile pour debug ou synchronisation future)
+// Lister tous les clients
 app.get('/clients', async (req, res) => {
   const { data, error } = await supabase.from('clients').select('*');
 
