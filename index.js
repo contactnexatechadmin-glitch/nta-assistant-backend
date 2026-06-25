@@ -20,6 +20,7 @@ const MESSAGE_ACCES_COUPE =
 
 const MAX_HISTORY = 10;
 
+// Récupère l'historique depuis Supabase
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
     .from('conversations')
@@ -35,6 +36,7 @@ async function getHistoryFromSupabase(sessionId) {
   return data || [];
 }
 
+// Sauvegarde un nouveau message dans l'historique Supabase
 async function saveMessageToSupabase(sessionId, role, content) {
   const { error } = await supabase
     .from('conversations')
@@ -42,6 +44,72 @@ async function saveMessageToSupabase(sessionId, role, content) {
 
   if (error) {
     console.error('Erreur sauvegarde message Supabase:', error.message);
+  }
+}
+
+// Analyse le message avec Claude et enregistre les métadonnées dans Supabase
+async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
+  try {
+    const systemPromptMetadata = 
+      "Tu es un agent d'analyse de données spécialisé dans le e-commerce.\n" +
+      "Analyse le message d'un client et extrait les informations STRICTEMENT au format JSON.\n" +
+      "Ne renvoie RIEN d'autre que le JSON (pas de phrases d'introduction, pas de balises markdown).\n\n" +
+      "Structure attendue :\n" +
+      "{\n" +
+      "  \"intent_category\": \"vente\" ou \"demande_prix\" ou \"disponibilite_stock\" ou \"reclamation\" ou \"autre\",\n" +
+      "  \"product_mentioned\": \"nom du produit\" ou null,\n" +
+      "  \"estimated_value\": nombre (montant estimé si achat/commande, ex: 15000) ou 0,\n" +
+      "  \"requires_action\": true ou false,\n" +
+      "  \"action_details\": \"résumé de l'action humaine nécessaire\" ou null\n" +
+      "}";
+
+    const messagePayload = [{ role: 'user', content: texteMessage }];
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'accept-encoding': 'identity',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: systemPromptMetadata,
+        messages: messagePayload,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Échec analyse Claude: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const rawText = data.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
+      .trim();
+
+    const metadata = JSON.parse(rawText);
+
+    const { error } = await supabase
+      .from('interactions_metadata')
+      .insert([{
+        session_id: sessionId,
+        intent_category: metadata.intent_category || 'autre',
+        product_mentioned: metadata.product_mentioned || null,
+        estimated_value: metadata.estimated_value || 0,
+        requires_action: metadata.requires_action || false,
+        action_details: metadata.action_details || null
+      }]);
+
+    if (error) {
+      console.error('Erreur insertion interactions_metadata:', error.message);
+    }
+  } catch (err) {
+    console.error('Erreur lors de l\'extraction/sauvegarde des métadonnées:', err.message);
   }
 }
 
@@ -96,44 +164,41 @@ const SYSTEM_WHATSAPP =
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]";
 
-// SERVIR LE DASHBOARD SUR LA ROUTE RACINE
+// SERVIR LE DASHBOARD SUR LA ROUTE RACINE (Nom exact de ton fichier)
 app.get('/', (req, res) => { 
-  res.sendFile(path.resolve('dashboard.html')); 
+  res.sendFile(path.resolve('nta_dashboard_reporting.html')); 
 });
 
 // ROUTE DE REPORTING EN JSON (UTILISÉE PAR LE DASHBOARD)
 app.get('/reporting', async (req, res) => {
   try {
-    const { data: leads, error } = await supabase
-      .from('leads_reporting')
+    const { data: records, error } = await supabase
+      .from('interactions_metadata')
       .select('*')
       .order('interaction_date', { ascending: false });
 
     if (error) throw error;
 
-    let totalInteractions = leads.length;
-    let estimatedPipelineValue = 0;
-    let pendingActionsCount = 0;
-    let categoriesDistribution = {};
+    let totalValue = 0;
+    let actionsCount = 0;
+    const categoriesMap = {};
 
-    leads.forEach(lead => {
-      estimatedPipelineValue += lead.estimated_value || 0;
-      if (lead.requires_action) {
-        pendingActionsCount++;
-      }
-      if (lead.intent_category) {
-        categoriesDistribution[lead.intent_category] = (categoriesDistribution[lead.intent_category] || 0) + 1;
-      }
+    records.forEach(rec => {
+      totalValue += Number(rec.estimated_value || 0);
+      if (rec.requires_action) actionsCount++;
+      
+      const cat = rec.intent_category || 'autre';
+      categoriesMap[cat] = (categoriesMap[cat] || 0) + 1;
     });
 
     res.json({
       summary: {
-        total_interactions: totalInteractions,
-        estimated_pipeline_value: estimatedPipelineValue,
-        pending_actions_count: pendingActionsCount
+        total_interactions: records.length,
+        estimated_pipeline_value: totalValue,
+        pending_actions_count: actionsCount
       },
-      categories_distribution: categoriesDistribution,
-      recent_leads: leads
+      categories_distribution: categoriesMap,
+      recent_leads: records
     });
   } catch (err) {
     console.error('Erreur génération reporting:', err.message);
@@ -154,6 +219,10 @@ app.post('/webhook', async (req, res) => {
     }
 
     await saveMessageToSupabase(from, 'user', incomingMsg);
+    
+    // Réactivation de la capture IA en arrière-plan
+    analyserEtSauvegarderMetadata(from, incomingMsg);
+
     const history = await getHistoryFromSupabase(from);
     const reply = await askClaude(history, SYSTEM_WHATSAPP);
     await saveMessageToSupabase(from, 'assistant', reply);
@@ -172,6 +241,10 @@ app.post('/demo', async (req, res) => {
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
   try {
     await saveMessageToSupabase(sessionId, 'user', message);
+    
+    // Réactivation de la capture IA pour la démo
+    analyserEtSauvegarderMetadata(sessionId, message);
+
     const history = await getHistoryFromSupabase(sessionId);
     const reply = await askClaude(history, SYSTEM_DEMO);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
