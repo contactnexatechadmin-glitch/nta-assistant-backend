@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NTA Assistant - Tableau de Bord</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-creme: #FDFBF7;
+            --primary-brand: #1E293B;
+            --accent-gold: #D97706;
+            --text-dark: #0F172A;
+            --card-bg: #FFFFFF;
+            --border-color: #E2E8F0;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg-creme); color: var(--text-dark); padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; border-bottom: 2px solid var(--border-color); margin-bottom: 30px; }
+        h1 { color: var(--primary-brand); font-size: 24px; }
+        .brand-sub { color: var(--accent-gold); font-weight: bold; font-size: 14px; }
+        .grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border-color); padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card-title { font-size: 14px; color: #64748B; text-transform: uppercase; margin-bottom: 10px; font-weight: 600; }
+        .card-value { font-size: 28px; font-weight: bold; color: var(--primary-brand); }
+        .grid-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+        @media (max-width: 768px) { .grid-charts { grid-template-columns: 1fr; } }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; background: var(--card-bg); }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
+        th { background-color: #F8FAFC; color: var(--primary-brand); font-weight: 600; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+        .badge-vente { background: #DCFCE7; color: #15803D; }
+        .badge-prix { background: #FEF9C3; color: #A16207; }
+        .badge-stock { background: #DBEAFE; color: #1D4ED8; }
+        .badge-action { background: #FEE2E2; color: #B91C1C; }
+        .badge-autre { background: #F1F5F9; color: #475569; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <h1>NTA Assistant — Reporting Intelligent</h1>
+            <div class="brand-sub">NEXA TECH ADMIN</div>
+        </div>
+    </header>
+
+    <main>
+        <div class="grid-stats">
+            <div class="card">
+                <div class="card-title">Interactions Globales</div>
+                <div class="card-value" id="stat-total">0</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Estimation Pipeline (FCFA)</div>
+                <div class="card-value" id="stat-value">0 FCFA</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Actions Humaines Requises</div>
+                <div class="card-value" id="stat-actions" style="color: var(--accent-gold);">0</div>
+            </div>
+        </div>
+
+        <div class="grid-charts">
+            <div class="card">
+                <div class="card-title">Distribution des Intentions</div>
+                <canvas id="chart-intentions"></canvas>
+            </div>
+            <div class="card">
+                <div class="card-title">Suivi des Opportunités Récentes</div>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Session</th>
+                                <th>Catégorie</th>
+                                <th>Produit</th>
+                                <th>Valeur Estimée</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-leads">
+                            <tr>
+                                <td colspan="5" style="text-align:center; color:#94A3B8;">Chargement des données en cours...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let intentChart = null;
+
+        async function fetchReportingData() {
+            try {
+                const response = await fetch('/reporting');
+                if (!response.ok) throw new Error('Erreur réseau');
+                const data = await response.json();
+
+                document.getElementById('stat-total').innerText = data.summary.total_interactions;
+                document.getElementById('stat-value').innerText = data.summary.estimated_pipeline_value.toLocaleString('fr-FR') + ' FCFA';
+                document.getElementById('stat-actions').innerText = data.summary.pending_actions_count;
+
+                const tbody = document.getElementById('table-leads');
+                tbody.innerHTML = '';
+
+                if (data.recent_leads.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#94A3B8;">Aucune donnée enregistrée</td></tr>`;
+                } else {
+                    data.recent_leads.forEach(lead => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${lead.session_id.replace('whatsapp:', '')}</td>
+                            <td><span class="badge badge-${lead.intent_category}">${lead.intent_category.toUpperCase()}</span></td>
+                            <td>${lead.product_mentioned || '-'}</td>
+                            <td>${Number(lead.estimated_value).toLocaleString('fr-FR')} FCFA</td>
+                            <td>${lead.requires_action ? `<span class="badge badge-action" title="${lead.action_details || ''}">À CONTACTER</span>` : '✔️'}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+
+                const labels = Object.keys(data.categories_distribution);
+                const counts = Object.values(data.categories_distribution);
+
+                if (intentChart) intentChart.destroy();
+                const ctx = document.getElementById('chart-intentions').getContext('2d');
+                intentChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels.map(l => l.toUpperCase()),
+                        datasets: [{
+                            label: 'Nombre d\'interactions',
+                            data: counts,
+                            backgroundColor: ['#1E293B', '#D97706', '#2563EB', '#16A34A', '#DC2626', '#475569'],
+                            borderWidth: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+                    }
+                });
+
+            } catch (err) {
+                console.error('Erreur de chargement du tableau de bord:', err);
+            }
+        }
+
+        fetchReportingData();
+        setInterval(fetchReportingData, 10000);
+    </script>
+</body>
+</html>
