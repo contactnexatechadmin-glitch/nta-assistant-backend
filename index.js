@@ -2,6 +2,7 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
+import path from 'path';
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -19,7 +20,6 @@ const MESSAGE_ACCES_COUPE =
 
 const MAX_HISTORY = 10;
 
-// Récupère l'historique depuis Supabase (les X derniers messages, triés par date)
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
     .from('conversations')
@@ -35,7 +35,6 @@ async function getHistoryFromSupabase(sessionId) {
   return data || [];
 }
 
-// Sauvegarde un nouveau message dans l'historique Supabase
 async function saveMessageToSupabase(sessionId, role, content) {
   const { error } = await supabase
     .from('conversations')
@@ -46,77 +45,8 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
-// Analyse le message avec Claude et enregistre les métadonnées dans Supabase
-async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
-  try {
-    const systemPromptMetadata = 
-      "Tu es un agent d'analyse de données spécialisé dans le e-commerce.\n" +
-      "Analyse le message d'un client et extrait les informations STRICTEMENT au format JSON.\n" +
-      "Ne renvoie RIEN d'autre que le JSON (pas de phrases d'introduction, pas de balises markdown).\n\n" +
-      "Structure attendue :\n" +
-      "{\n" +
-      "  \"intent_category\": \"vente\" ou \"demande_prix\" ou \"disponibilite_stock\" ou \"reclamation\" ou \"autre\",\n" +
-      "  \"product_mentioned\": \"nom du produit\" ou null,\n" +
-      "  \"estimated_value\": nombre (montant estimé si achat/commande, ex: 15000) ou 0,\n" +
-      "  \"requires_action\": true ou false,\n" +
-      "  \"action_details\": \"résumé de l'action humaine nécessaire\" ou null\n" +
-      "}";
-
-    const messagePayload = [{ role: 'user', content: texteMessage }];
-    
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'accept-encoding': 'identity',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 300,
-        system: systemPromptMetadata,
-        messages: messagePayload,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Échec analyse Claude: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const rawText = data.content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n')
-      .trim();
-
-    const metadata = JSON.parse(rawText);
-
-    const { error } = await supabase
-      .from('interactions_metadata')
-      .insert([{
-        session_id: sessionId,
-        intent_category: metadata.intent_category || 'autre',
-        product_mentioned: metadata.product_mentioned || null,
-        estimated_value: metadata.estimated_value || 0,
-        requires_action: metadata.requires_action || false,
-        action_details: metadata.action_details || null
-      }]);
-
-    if (error) {
-      console.error('Erreur insertion interactions_metadata:', error.message);
-    }
-  } catch (err) {
-    console.error('Erreur lors de l\'extraction/sauvegarde des métadonnées:', err.message);
-  }
-}
-
 function escapeXml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function askClaude(history, systemPrompt) {
@@ -142,10 +72,7 @@ async function askClaude(history, systemPrompt) {
   }
 
   const data = await response.json();
-  return data.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
+  return data.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
 }
 
 async function estSuspendu(whatsappNumber) {
@@ -159,51 +86,65 @@ async function estSuspendu(whatsappNumber) {
     console.error('Erreur lecture statut Supabase:', error.message);
     return false; 
   }
-
   if (!data) return false; 
-
   return data.suspended === true;
 }
 
 const SYSTEM_WHATSAPP =
-  "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. " +
-  "Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. " +
-  "Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
+  "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
 
 const SYSTEM_DEMO =
-  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire.\n\n" +
-  "Tu réponds aux clients via WhatsApp avec professionnalisme, chaleur et efficacité.\n\n" +
-  "RÈGLES ABSOLUES :\n" +
-  "- Vouvoie TOUJOURS les clients (jamais de 'tu')\n" +
-  "- Réponds UNIQUEMENT en français\n" +
-  "- Sois concise mais complète (max 4-5 phrases par réponse)\n" +
-  "- Reste TOUJOURS dans le rôle de l'assistante de cette boutique\n" +
-  "- Si un client envoie un message vocal ou audio, réponds : 'Je lis uniquement les messages écrits pour le moment. N'hésitez pas à taper votre question, je vous réponds immédiatement 😊'\n\n" +
-  "INFORMATIONS DE LA BOUTIQUE :\n" +
-  "- Nom : Boutique Adjoua Mode\n" +
-  "- Localisation : Cocody, Riviera 2, Abidjan (près du carrefour Riviera 2)\n" +
-  "- Spécialité : Mode féminine — pagnes wax, robes de soirée, tenues casual, accessoires\n" +
-  "- Gamme de prix : 5 000 FCFA (accessoires) à 85 000 FCFA (robes de soirée sur mesure)\n" +
-  "- Horaires : Lundi–Samedi 8h–20h, Dimanche 10h–18h\n" +
-  "- Livraison : Abidjan entier (500–1 500 FCFA selon la commune), délai 2–4h\n" +
-  "- Commande sur mesure : disponible, délai 5–7 jours\n" +
-  "- Paiement : Wave, Orange Money, cash à la boutique\n\n" +
-  "Si un client demande à parler à quelqu'un, dis-lui que la propriétaire Mme Adjoua rappellera dès que possible.";
+  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]";
 
-// Route santé
-app.get('/', (req, res) => {
-  res.send('NTA Assistant backend en ligne ✅');
+// SERVIR LE DASHBOARD SUR LA ROUTE RACINE
+app.get('/', (req, res) => { 
+  res.sendFile(path.resolve('dashboard.html')); 
 });
 
-// Route Twilio WhatsApp
+// ROUTE DE REPORTING EN JSON (UTILISÉE PAR LE DASHBOARD)
+app.get('/reporting', async (req, res) => {
+  try {
+    const { data: leads, error } = await supabase
+      .from('leads_reporting')
+      .select('*')
+      .order('interaction_date', { ascending: false });
+
+    if (error) throw error;
+
+    let totalInteractions = leads.length;
+    let estimatedPipelineValue = 0;
+    let pendingActionsCount = 0;
+    let categoriesDistribution = {};
+
+    leads.forEach(lead => {
+      estimatedPipelineValue += lead.estimated_value || 0;
+      if (lead.requires_action) {
+        pendingActionsCount++;
+      }
+      if (lead.intent_category) {
+        categoriesDistribution[lead.intent_category] = (categoriesDistribution[lead.intent_category] || 0) + 1;
+      }
+    });
+
+    res.json({
+      summary: {
+        total_interactions: totalInteractions,
+        estimated_pipeline_value: estimatedPipelineValue,
+        pending_actions_count: pendingActionsCount
+      },
+      categories_distribution: categoriesDistribution,
+      recent_leads: leads
+    });
+  } catch (err) {
+    console.error('Erreur génération reporting:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération des données de reporting' });
+  }
+});
+
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
   const from = req.body.From;
-
-  if (!incomingMsg || !from) {
-    res.set('Content-Type', 'text/xml');
-    return res.send('<Response></Response>');
-  }
+  if (!incomingMsg || !from) { res.set('Content-Type', 'text/xml'); return res.send('<Response></Response>'); }
 
   try {
     const suspendu = await estSuspendu(from);
@@ -213,13 +154,8 @@ app.post('/webhook', async (req, res) => {
     }
 
     await saveMessageToSupabase(from, 'user', incomingMsg);
-    
-    // Lancement de l'analyse IA
-    analyserEtSauvegarderMetadata(from, incomingMsg);
-    
     const history = await getHistoryFromSupabase(from);
     const reply = await askClaude(history, SYSTEM_WHATSAPP);
-    
     await saveMessageToSupabase(from, 'assistant', reply);
 
     res.set('Content-Type', 'text/xml');
@@ -227,160 +163,22 @@ app.post('/webhook', async (req, res) => {
   } catch (err) {
     console.error('Erreur Claude API:', err.message);
     res.set('Content-Type', 'text/xml');
-    res.send(
-      '<Response><Message>Désolé, une erreur est survenue. Réessaie dans un instant.</Message></Response>'
-    );
+    res.send('<Response><Message>Désolé, une erreur est survenue.</Message></Response>');
   }
 });
 
-// Route démo page de vente
 app.post('/demo', async (req, res) => {
   const { message, sessionId } = req.body;
-
-  if (!message || !sessionId) {
-    return res.status(400).json({ error: 'message et sessionId requis' });
-  }
-
+  if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
   try {
     await saveMessageToSupabase(sessionId, 'user', message);
-    
-    analyserEtSauvegarderMetadata(sessionId, message);
-    
     const history = await getHistoryFromSupabase(sessionId);
     const reply = await askClaude(history, SYSTEM_DEMO);
-    
     await saveMessageToSupabase(sessionId, 'assistant', reply);
-
     res.json({ reply });
   } catch (err) {
-    console.error('Erreur démo Claude API:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
-});
-
-// ===== [NOUVELLE ROUTE] : Récupération des stats pour le Dashboard =====
-app.get('/reporting', async (req, res) => {
-  try {
-    // Récupérer toutes les lignes de métadonnées
-    const { data: records, error } = await supabase
-      .from('interactions_metadata')
-      .select('*')
-      .order('interaction_date', { ascending: false });
-
-    if (error) throw error;
-
-    // Calculs basiques des KPIs
-    let totalValue = 0;
-    let actionsCount = 0;
-    const categoriesMap = {};
-
-    records.forEach(rec => {
-      totalValue += Number(rec.estimated_value || 0);
-      if (rec.requires_action) actionsCount++;
-      
-      const cat = rec.intent_category || 'autre';
-      categoriesMap[cat] = (categoriesMap[cat] || 0) + 1;
-    });
-
-    res.json({
-      summary: {
-        total_interactions: records.length,
-        estimated_pipeline_value: totalValue,
-        pending_actions_count: actionsCount
-      },
-      categories_distribution: categoriesMap,
-      recent_leads: records.slice(0, 5) // renvoie les 5 derniers pour un aperçu rapide
-    });
-
-  } catch (err) {
-    console.error('Erreur route reporting:', err.message);
-    res.status(500).json({ error: 'Impossible de générer le rapport' });
-  }
-});
-
-// ===== Routes de gestion des clients (dashboard) =====
-
-// Ajouter un nouveau client
-app.post('/clients', async (req, res) => {
-  const { name, whatsapp_number, sector, price, start_date, trial } = req.body;
-
-  if (!name || !whatsapp_number || !start_date) {
-    return res.status(400).json({ error: 'name, whatsapp_number et start_date sont requis' });
-  }
-
-  const { data, error } = await supabase
-    .from('clients')
-    .insert([
-      {
-        name,
-        whatsapp_number,
-        sector: sector || null,
-        price: price || 29000,
-        start_date,
-        trial: trial !== undefined ? trial : true,
-        suspended: false,
-      },
-    ])
-    .select();
-
-  if (error) {
-    console.error('Erreur ajout client Supabase:', error.message);
-    return res.status(500).json({ error: error.message });
-  }
-
-  res.status(201).json({ client: data[0] });
-});
-
-// Mettre à jour un client existant
-app.patch('/clients/:whatsapp', async (req, res) => {
-  const { whatsapp } = req.params;
-  const updates = req.body;
-
-  const { data, error } = await supabase
-    .from('clients')
-    .update(updates)
-    .eq('whatsapp_number', whatsapp)
-    .select();
-
-  if (error) {
-    console.error('Erreur mise à jour client Supabase:', error.message);
-    return res.status(500).json({ error: error.message });
-  }
-
-  if (!data || data.length === 0) {
-    return res.status(404).json({ error: 'Client non trouvé' });
-  }
-
-  res.json({ client: data[0] });
-});
-
-// Supprimer un client
-app.delete('/clients/:whatsapp', async (req, res) => {
-  const { whatsapp } = req.params;
-
-  const { error } = await supabase
-    .from('clients')
-    .delete()
-    .eq('whatsapp_number', whatsapp);
-
-  if (error) {
-    console.error('Erreur suppression client Supabase:', error.message);
-    return res.status(500).json({ error: error.message });
-  }
-
-  res.status(204).send();
-});
-
-// Lister tous les clients
-app.get('/clients', async (req, res) => {
-  const { data, error } = await supabase.from('clients').select('*');
-
-  if (error) {
-    console.error('Erreur lecture clients Supabase:', error.message);
-    return res.status(500).json({ error: error.message });
-  }
-
-  res.json({ clients: data });
 });
 
 const PORT = process.env.PORT || 3000;
