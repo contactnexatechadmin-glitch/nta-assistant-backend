@@ -46,7 +46,7 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
-// Nouvelle fonction : Analyse le message avec Claude et enregistre les métadonnées dans Supabase
+// Analyse le message avec Claude et enregistre les métadonnées dans Supabase
 async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
   try {
     const systemPromptMetadata = 
@@ -62,7 +62,6 @@ async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
       "  \"action_details\": \"résumé de l'action humaine nécessaire\" ou null\n" +
       "}";
 
-    // Formatage du message pour Claude conforme à son API
     const messagePayload = [{ role: 'user', content: texteMessage }];
     
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -92,10 +91,8 @@ async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
       .join('\n')
       .trim();
 
-    // Nettoyage et parsing sécurisé du JSON renvoyé par l'IA
     const metadata = JSON.parse(rawText);
 
-    // Insertion propre dans la table créée à l'étape précédente
     const { error } = await supabase
       .from('interactions_metadata')
       .insert([{
@@ -151,7 +148,6 @@ async function askClaude(history, systemPrompt) {
     .join('\n');
 }
 
-// Vérifie dans Supabase si un numéro WhatsApp est suspendu.
 async function estSuspendu(whatsappNumber) {
   const { data, error } = await supabase
     .from('clients')
@@ -210,26 +206,20 @@ app.post('/webhook', async (req, res) => {
   }
 
   try {
-    // Vérification du statut avant toute réponse IA
     const suspendu = await estSuspendu(from);
     if (suspendu) {
       res.set('Content-Type', 'text/xml');
       return res.send(`<Response><Message>${escapeXml(MESSAGE_ACCES_COUPE)}</Message></Response>`);
     }
 
-    // 1. Sauvegarde le message reçu du client dans Supabase
     await saveMessageToSupabase(from, 'user', incomingMsg);
     
-    // [COMPLÉMENT] : Lancement de l'analyse IA asynchrone des métadonnées (n'interfère pas avec la vitesse de réponse)
+    // Lancement de l'analyse IA
     analyserEtSauvegarderMetadata(from, incomingMsg);
     
-    // 2. Récupère l'historique complet (y compris le message actuel)
     const history = await getHistoryFromSupabase(from);
-    
-    // 3. Demande la réponse à Claude
     const reply = await askClaude(history, SYSTEM_WHATSAPP);
     
-    // 4. Sauvegarde la réponse de l'IA dans Supabase
     await saveMessageToSupabase(from, 'assistant', reply);
 
     res.set('Content-Type', 'text/xml');
@@ -252,25 +242,59 @@ app.post('/demo', async (req, res) => {
   }
 
   try {
-    // 1. Sauvegarde le message de la démo
     await saveMessageToSupabase(sessionId, 'user', message);
     
-    // [COMPLÉMENT] : Analyse du message pour la démo également
     analyserEtSauvegarderMetadata(sessionId, message);
     
-    // 2. Récupère l'historique
     const history = await getHistoryFromSupabase(sessionId);
-    
-    // 3. Interroge Claude
     const reply = await askClaude(history, SYSTEM_DEMO);
     
-    // 4. Sauvegarde la réponse
     await saveMessageToSupabase(sessionId, 'assistant', reply);
 
     res.json({ reply });
   } catch (err) {
     console.error('Erreur démo Claude API:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ===== [NOUVELLE ROUTE] : Récupération des stats pour le Dashboard =====
+app.get('/reporting', async (req, res) => {
+  try {
+    // Récupérer toutes les lignes de métadonnées
+    const { data: records, error } = await supabase
+      .from('interactions_metadata')
+      .select('*')
+      .order('interaction_date', { ascending: false });
+
+    if (error) throw error;
+
+    // Calculs basiques des KPIs
+    let totalValue = 0;
+    let actionsCount = 0;
+    const categoriesMap = {};
+
+    records.forEach(rec => {
+      totalValue += Number(rec.estimated_value || 0);
+      if (rec.requires_action) actionsCount++;
+      
+      const cat = rec.intent_category || 'autre';
+      categoriesMap[cat] = (categoriesMap[cat] || 0) + 1;
+    });
+
+    res.json({
+      summary: {
+        total_interactions: records.length,
+        estimated_pipeline_value: totalValue,
+        pending_actions_count: actionsCount
+      },
+      categories_distribution: categoriesMap,
+      recent_leads: records.slice(0, 5) // renvoie les 5 derniers pour un aperçu rapide
+    });
+
+  } catch (err) {
+    console.error('Erreur route reporting:', err.message);
+    res.status(500).json({ error: 'Impossible de générer le rapport' });
   }
 });
 
