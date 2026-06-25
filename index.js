@@ -24,7 +24,6 @@ const MESSAGE_ACCES_COUPE =
 
 const MAX_HISTORY = 10;
 
-// Récupère l'historique depuis Supabase
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
     .from('conversations')
@@ -40,7 +39,6 @@ async function getHistoryFromSupabase(sessionId) {
   return data || [];
 }
 
-// Sauvegarde un nouveau message dans l'historique Supabase
 async function saveMessageToSupabase(sessionId, role, content) {
   const { error } = await supabase
     .from('conversations')
@@ -51,7 +49,6 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
-// Analyse le message avec Claude et enregistre les métadonnées dans Supabase
 async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
   try {
     const systemPromptMetadata = 
@@ -168,7 +165,7 @@ const SYSTEM_WHATSAPP =
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]";
 
-// SERVIR LE DASHBOARD SUR LA ROUTE RACINE (Correction du chemin absolu)
+// SERVIR LE DASHBOARD SUR LA ROUTE RACINE
 app.get('/', (req, res) => { 
   res.sendFile(path.join(__dirname, 'nta_dashboard_reporting.html')); 
 });
