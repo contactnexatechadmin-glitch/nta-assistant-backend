@@ -2,11 +2,6 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -49,72 +44,6 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
-async function analyserEtSauvegarderMetadata(merchantId, sessionId, texteMessage) {
-  try {
-    const systemPromptMetadata = 
-      "Tu es un agent d'analyse de données spécialisé dans le e-commerce.\n" +
-      "Analyse le message d'un client et extrait les informations STRICTEMENT au format JSON.\n" +
-      "Ne renvoie RIEN d'autre que le JSON (pas de phrases d'introduction, pas de balises markdown).\n\n" +
-      "Structure attendue :\n" +
-      "{\n" +
-      "  \"intent_category\": \"vente\" ou \"demande_prix\" ou \"disponibilite_stock\" ou \"reclamation\" ou \"autre\",\n" +
-      "  \"product_mentioned\": \"nom du produit\" ou null,\n" +
-      "  \"estimated_value\": nombre (montant estimé si achat/commande, ex: 15000) ou 0,\n" +
-      "  \"requires_action\": true ou false,\n" +
-      "  \"action_details\": \"résumé de l'action humaine nécessaire\" ou null\n" +
-      "}";
-
-    const messagePayload = [{ role: 'user', content: texteMessage }];
-    
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'accept-encoding': 'identity',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 300,
-        system: systemPromptMetadata,
-        messages: messagePayload,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Échec analyse Claude: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const rawText = data.content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n')
-      .trim();
-
-    const metadata = JSON.parse(rawText);
-
-    const { error } = await supabase
-      .from('interactions_metadata')
-      .insert([{
-        merchant_id: merchantId,
-        session_id: sessionId,
-        intent_category: metadata.intent_category || 'autre',
-        product_mentioned: metadata.product_mentioned || null,
-        estimated_value: metadata.estimated_value || 0,
-        requires_action: metadata.requires_action || false,
-        action_details: metadata.action_details || null
-      }]);
-
-    if (error) {
-      console.error('Erreur insertion interactions_metadata:', error.message);
-    }
-  } catch (err) {
-    console.error('Erreur lors de l\'extraction/sauvegarde des métadonnées:', err.message);
-  }
-}
-
 function escapeXml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -129,7 +58,7 @@ async function askClaude(history, systemPrompt) {
       'accept-encoding': 'identity',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-3-5-sonnet-20241022',
       max_tokens: 500,
       system: systemPrompt,
       messages: history,
@@ -143,6 +72,29 @@ async function askClaude(history, systemPrompt) {
 
   const data = await response.json();
   return data.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+}
+
+async function askClaudeReporting(history) {
+  const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse l'historique des messages de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques complexes : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi. 3. Le produit le plus demandé.";
+  
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: history,
+    }),
+  });
+
+  if (!response.ok) throw new Error('Erreur API Reporting');
+  const data = await response.json();
+  return data.content[0].text;
 }
 
 async function estSuspendu(whatsappNumber) {
@@ -166,59 +118,11 @@ const SYSTEM_WHATSAPP =
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]";
 
-// SERVIR LE DASHBOARD SUR LA ROUTE RACINE
-app.get('/', (req, res) => { 
-  res.sendFile(path.join(__dirname, 'nta_dashboard_reporting.html')); 
-});
-
-// ROUTE DE REPORTING FILTRÉE PAR MARCHAND
-app.get('/reporting', async (req, res) => {
-  try {
-    const { merchant_id } = req.query;
-    if (!merchant_id) {
-      return res.status(400).json({ error: 'Paramètre merchant_id requis' });
-    }
-
-    const { data: records, error } = await supabase
-      .from('interactions_metadata')
-      .select('*')
-      .eq('merchant_id', merchant_id)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-
-    let totalValue = 0;
-    let actionsCount = 0;
-    const categoriesMap = {};
-
-    records.forEach(rec => {
-      totalValue += Number(rec.estimated_value || 0);
-      if (rec.requires_action) actionsCount++;
-      
-      const cat = rec.intent_category || 'autre';
-      categoriesMap[cat] = (categoriesMap[cat] || 0) + 1;
-    });
-
-    res.json({
-      summary: {
-        total_interactions: records.length,
-        estimated_pipeline_value: totalValue,
-        pending_actions_count: actionsCount
-      },
-      categories_distribution: categoriesMap,
-      recent_leads: records
-    });
-  } catch (err) {
-    console.error('Erreur génération reporting:', err.message);
-    res.status(500).json({ error: 'Erreur lors de la récupération des données de reporting' });
-  }
-});
+app.get('/', (req, res) => { res.send('NTA Assistant backend en ligne ✅'); });
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
-  const from = req.body.From; 
-  const to = req.body.To;     
-  
+  const from = req.body.From;
   if (!incomingMsg || !from) { res.set('Content-Type', 'text/xml'); return res.send('<Response></Response>'); }
 
   try {
@@ -229,8 +133,6 @@ app.post('/webhook', async (req, res) => {
     }
 
     await saveMessageToSupabase(from, 'user', incomingMsg);
-    analyserEtSauvegarderMetadata(to || 'default_merchant', from, incomingMsg);
-
     const history = await getHistoryFromSupabase(from);
     const reply = await askClaude(history, SYSTEM_WHATSAPP);
     await saveMessageToSupabase(from, 'assistant', reply);
@@ -245,19 +147,32 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.post('/demo', async (req, res) => {
-  const { message, sessionId, merchantId } = req.body;
-  const targetMerchant = merchantId || 'demo_merchant';
+  const { message, sessionId } = req.body;
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
   try {
     await saveMessageToSupabase(sessionId, 'user', message);
-    analyserEtSauvegarderMetadata(targetMerchant, sessionId, message);
-
     const history = await getHistoryFromSupabase(sessionId);
     const reply = await askClaude(history, SYSTEM_DEMO);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
     res.json({ reply });
   } catch (err) {
     res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.get('/bilan/:numero', async (req, res) => {
+  const { numero } = req.params;
+  try {
+    const history = await getHistoryFromSupabase(numero);
+    if (history.length === 0) {
+      return res.send('Aucun message enregistré pour ce commerçant aujourd\'hui.');
+    }
+    const resume = await askClaudeReporting(history);
+    res.set('Content-Type', 'text/plain; charset=utf-8');
+    res.send(`--- BILAN EXPRESS NTA ---\n\n${resume}`);
+  } catch (err) {
+    console.error('Erreur Bilan:', err.message);
+    res.status(500).send('Erreur lors de la génération du bilan.');
   }
 });
 
