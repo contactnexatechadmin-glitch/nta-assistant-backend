@@ -46,6 +46,75 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
+// Nouvelle fonction : Analyse le message avec Claude et enregistre les métadonnées dans Supabase
+async function analyserEtSauvegarderMetadata(sessionId, texteMessage) {
+  try {
+    const systemPromptMetadata = 
+      "Tu es un agent d'analyse de données spécialisé dans le e-commerce.\n" +
+      "Analyse le message d'un client et extrait les informations STRICTEMENT au format JSON.\n" +
+      "Ne renvoie RIEN d'autre que le JSON (pas de phrases d'introduction, pas de balises markdown).\n\n" +
+      "Structure attendue :\n" +
+      "{\n" +
+      "  \"intent_category\": \"vente\" ou \"demande_prix\" ou \"disponibilite_stock\" ou \"reclamation\" ou \"autre\",\n" +
+      "  \"product_mentioned\": \"nom du produit\" ou null,\n" +
+      "  \"estimated_value\": nombre (montant estimé si achat/commande, ex: 15000) ou 0,\n" +
+      "  \"requires_action\": true ou false,\n" +
+      "  \"action_details\": \"résumé de l'action humaine nécessaire\" ou null\n" +
+      "}";
+
+    // Formatage du message pour Claude conforme à son API
+    const messagePayload = [{ role: 'user', content: texteMessage }];
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'accept-encoding': 'identity',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: systemPromptMetadata,
+        messages: messagePayload,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Échec analyse Claude: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const rawText = data.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
+      .trim();
+
+    // Nettoyage et parsing sécurisé du JSON renvoyé par l'IA
+    const metadata = JSON.parse(rawText);
+
+    // Insertion propre dans la table créée à l'étape précédente
+    const { error } = await supabase
+      .from('interactions_metadata')
+      .insert([{
+        session_id: sessionId,
+        intent_category: metadata.intent_category || 'autre',
+        product_mentioned: metadata.product_mentioned || null,
+        estimated_value: metadata.estimated_value || 0,
+        requires_action: metadata.requires_action || false,
+        action_details: metadata.action_details || null
+      }]);
+
+    if (error) {
+      console.error('Erreur insertion interactions_metadata:', error.message);
+    }
+  } catch (err) {
+    console.error('Erreur lors de l\'extraction/sauvegarde des métadonnées:', err.message);
+  }
+}
+
 function escapeXml(str) {
   return str
     .replace(/&/g, '&amp;')
@@ -151,6 +220,9 @@ app.post('/webhook', async (req, res) => {
     // 1. Sauvegarde le message reçu du client dans Supabase
     await saveMessageToSupabase(from, 'user', incomingMsg);
     
+    // [COMPLÉMENT] : Lancement de l'analyse IA asynchrone des métadonnées (n'interfère pas avec la vitesse de réponse)
+    analyserEtSauvegarderMetadata(from, incomingMsg);
+    
     // 2. Récupère l'historique complet (y compris le message actuel)
     const history = await getHistoryFromSupabase(from);
     
@@ -182,6 +254,9 @@ app.post('/demo', async (req, res) => {
   try {
     // 1. Sauvegarde le message de la démo
     await saveMessageToSupabase(sessionId, 'user', message);
+    
+    // [COMPLÉMENT] : Analyse du message pour la démo également
+    analyserEtSauvegarderMetadata(sessionId, message);
     
     // 2. Récupère l'historique
     const history = await getHistoryFromSupabase(sessionId);
