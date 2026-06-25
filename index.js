@@ -3,6 +3,10 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -164,9 +168,9 @@ const SYSTEM_WHATSAPP =
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]";
 
-// SERVIR LE DASHBOARD SUR LA ROUTE RACINE (Nom exact de ton fichier)
+// SERVIR LE DASHBOARD SUR LA ROUTE RACINE (Correction du chemin absolu)
 app.get('/', (req, res) => { 
-  res.sendFile(path.resolve('nta_dashboard_reporting.html')); 
+  res.sendFile(path.join(__dirname, 'nta_dashboard_reporting.html')); 
 });
 
 // ROUTE DE REPORTING EN JSON (UTILISÉE PAR LE DASHBOARD)
@@ -219,8 +223,6 @@ app.post('/webhook', async (req, res) => {
     }
 
     await saveMessageToSupabase(from, 'user', incomingMsg);
-    
-    // Réactivation de la capture IA en arrière-plan
     analyserEtSauvegarderMetadata(from, incomingMsg);
 
     const history = await getHistoryFromSupabase(from);
@@ -241,8 +243,6 @@ app.post('/demo', async (req, res) => {
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
   try {
     await saveMessageToSupabase(sessionId, 'user', message);
-    
-    // Réactivation de la capture IA pour la démo
     analyserEtSauvegarderMetadata(sessionId, message);
 
     const history = await getHistoryFromSupabase(sessionId);
