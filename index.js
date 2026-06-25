@@ -159,16 +159,6 @@ async function estSuspendu(whatsappNumber) {
   return data.suspended === true;
 }
 
-const SYSTEM_ANALYSIS = 
-  "Tu es un analyste de données commercial. Analyse le dernier message de l'utilisateur et extrait les informations suivantes au format JSON strict, sans texte autour. \n" +
-  "Format attendu :\n" +
-  "{\n" +
-  "  \"intent_category\": \"vente\" ou \"prix\" ou \"stock\" ou \"action\" ou \"autre\",\n" +
-  "  \"product_mentioned\": \"nom du produit\" ou null,\n" +
-  "  \"estimated_value\": montant en nombre entier (FCFA) ou 0,\n" +
-  "  \"requires_action\": true ou false,\n" +
-  "  \"action_details\": \"ce que le vendeur doit faire\" ou null\n" +
-  "}";
 const SYSTEM_WHATSAPP =
   "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
 
@@ -186,7 +176,7 @@ app.get('/reporting', async (req, res) => {
     const { data: records, error } = await supabase
       .from('interactions_metadata')
       .select('*')
-      .order('interaction_date', { ascending: false });
+      .order('created_at', { ascending: false });
 
     if (error) throw error;
 
