@@ -17,6 +17,7 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 const NUMERO_PATRON = process.env.NUMERO_PATRON;
+const CRON_SECRET = process.env.CRON_SECRET; // NOUVEAU : clé secrète pour protéger la route de déclenchement
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
@@ -36,7 +37,7 @@ async function getHistoryFromSupabase(sessionId) {
 
   if (error) {
     console.error('Erreur récupération historique Supabase:', error.message);
-    return []; 
+    return [];
   }
   return data || [];
 }
@@ -44,7 +45,7 @@ async function getHistoryFromSupabase(sessionId) {
 async function getTodayMessages() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  
+
   const { data, error } = await supabase
     .from('conversations')
     .select('session_id, role, content')
@@ -77,9 +78,9 @@ async function estSuspendu(whatsappNumber) {
 
   if (error) {
     console.error('Erreur lecture statut Supabase:', error.message);
-    return false; 
+    return false;
   }
-  if (!data) return false; 
+  if (!data) return false;
   return data.suspended === true;
 }
 
@@ -97,7 +98,7 @@ async function askClaude(history, systemPrompt) {
       'accept-encoding': 'identity',
     },
     body: JSON.stringify({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-6', // CORRIGÉ : ancien modèle (claude-3-5-sonnet-20241022) retiré depuis le 19 février 2026
       max_tokens: 500,
       system: systemPrompt,
       messages: history,
@@ -115,7 +116,7 @@ async function askClaude(history, systemPrompt) {
 
 async function askClaudeReporting(transcript) {
   const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi (donne le numéro du client). 3. Le produit le plus demandé.";
-  
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -124,7 +125,7 @@ async function askClaudeReporting(transcript) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-6', // CORRIGÉ : même remplacement
       max_tokens: 300,
       system: systemPrompt,
       messages: [{ role: 'user', content: `Voici les échanges du jour :\n${transcript}` }],
@@ -136,31 +137,43 @@ async function askClaudeReporting(transcript) {
   return data.content[0].text;
 }
 
-cron.schedule('0 18 * * *', async () => {
-  console.log('--- Déclenchement du bilan de 18h00 ---');
+// NOUVEAU : la logique du bilan est extraite dans une fonction réutilisable,
+// appelée à la fois par le cron interne ET par la route /trigger-report
+async function envoyerBilanQuotidien() {
+  console.log('--- Déclenchement du bilan ---');
   if (!NUMERO_PATRON || !TWILIO_WHATSAPP_NUMBER) {
     console.log('Annulé : NUMERO_PATRON ou TWILIO_WHATSAPP_NUMBER manquant.');
-    return;
+    return { envoye: false, raison: 'Configuration manquante' };
   }
   try {
     const messagesJour = await getTodayMessages();
     if (messagesJour.length === 0) {
-      console.log('Aucun message aujourd\'hui. Pas de bilan envoyé.');
-      return;
+      console.log("Aucun message aujourd'hui. Pas de bilan envoyé.");
+      return { envoye: false, raison: 'Aucun message aujourd\'hui' };
     }
-    
-    const transcript = messagesJour.map(m => `${m.role === 'user' ? 'Client '+m.session_id : 'Bot'} : ${m.content}`).join('\n');
+
+    const transcript = messagesJour
+      .map((m) => `${m.role === 'user' ? 'Client ' + m.session_id : 'Bot'} : ${m.content}`)
+      .join('\n');
     const bilan = await askClaudeReporting(transcript);
-    
+
     await twilioClient.messages.create({
       from: `whatsapp:${TWILIO_WHATSAPP_NUMBER}`,
       to: `whatsapp:${NUMERO_PATRON}`,
-      body: `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`
+      body: `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`,
     });
     console.log('Bilan envoyé avec succès sur WhatsApp !');
+    return { envoye: true };
   } catch (err) {
-    console.error('Erreur lors de l\'envoi du bilan :', err.message);
+    console.error("Erreur lors de l'envoi du bilan :", err.message);
+    return { envoye: false, raison: err.message };
   }
+}
+
+// Garde-fou interne : reste actif comme filet de sécurité, mais le déclenchement
+// fiable se fait désormais via la route /trigger-report appelée par cron-job.org
+cron.schedule('0 18 * * *', () => {
+  envoyerBilanQuotidien();
 });
 
 const SYSTEM_WHATSAPP =
@@ -169,12 +182,27 @@ const SYSTEM_WHATSAPP =
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]";
 
-app.get('/', (req, res) => { res.send('NTA Assistant backend en ligne ✅'); });
+app.get('/', (req, res) => {
+  res.send('NTA Assistant backend en ligne ✅');
+});
+
+// NOUVEAU : route protégée, appelée par cron-job.org à 18h00 chaque jour
+app.get('/trigger-report', async (req, res) => {
+  const secretFourni = req.query.secret || req.headers['x-cron-secret'];
+  if (!CRON_SECRET || secretFourni !== CRON_SECRET) {
+    return res.status(403).json({ error: 'Accès refusé' });
+  }
+  const resultat = await envoyerBilanQuotidien();
+  res.json(resultat);
+});
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body;
   const from = req.body.From;
-  if (!incomingMsg || !from) { res.set('Content-Type', 'text/xml'); return res.send('<Response></Response>'); }
+  if (!incomingMsg || !from) {
+    res.set('Content-Type', 'text/xml');
+    return res.send('<Response></Response>');
+  }
 
   try {
     const suspendu = await estSuspendu(from);
