@@ -10,14 +10,13 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(cors());
 
-// Variables d'environnement
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER; // ex: +14155238886
-const NUMERO_PATRON = process.env.NUMERO_PATRON; // ex: +22501020304
+const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
+const NUMERO_PATRON = process.env.NUMERO_PATRON;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
@@ -26,8 +25,6 @@ const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
 
 const MAX_HISTORY = 10;
-
-// --- FONCTIONS SUPABASE ---
 
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
@@ -38,7 +35,7 @@ async function getHistoryFromSupabase(sessionId) {
     .limit(MAX_HISTORY);
 
   if (error) {
-    console.error('Erreur récupération historique:', error.message);
+    console.error('Erreur récupération historique Supabase:', error.message);
     return []; 
   }
   return data || [];
@@ -46,7 +43,7 @@ async function getHistoryFromSupabase(sessionId) {
 
 async function getTodayMessages() {
   const today = new Date();
-  today.setHours(0, 0, 0, 0); // Minuit aujourd'hui
+  today.setHours(0, 0, 0, 0);
   
   const { data, error } = await supabase
     .from('conversations')
@@ -67,7 +64,7 @@ async function saveMessageToSupabase(sessionId, role, content) {
     .insert([{ session_id: sessionId, role, content }]);
 
   if (error) {
-    console.error('Erreur sauvegarde message:', error.message);
+    console.error('Erreur sauvegarde message Supabase:', error.message);
   }
 }
 
@@ -78,7 +75,10 @@ async function estSuspendu(whatsappNumber) {
     .eq('whatsapp_number', whatsappNumber)
     .maybeSingle();
 
-  if (error) return false; 
+  if (error) {
+    console.error('Erreur lecture statut Supabase:', error.message);
+    return false; 
+  }
   if (!data) return false; 
   return data.suspended === true;
 }
@@ -86,8 +86,6 @@ async function estSuspendu(whatsappNumber) {
 function escapeXml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
-// --- FONCTIONS CLAUDE IA ---
 
 async function askClaude(history, systemPrompt) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -108,7 +106,7 @@ async function askClaude(history, systemPrompt) {
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Erreur API Claude: ${response.status} ${errText}`);
+    throw new Error(`Claude API a répondu ${response.status}: ${errText}`);
   }
 
   const data = await response.json();
@@ -138,8 +136,6 @@ async function askClaudeReporting(transcript) {
   return data.content[0].text;
 }
 
-// --- TÂCHE AUTOMATIQUE (CRON) À 18H00 ---
-
 cron.schedule('0 18 * * *', async () => {
   console.log('--- Déclenchement du bilan de 18h00 ---');
   if (!NUMERO_PATRON || !TWILIO_WHATSAPP_NUMBER) {
@@ -166,8 +162,6 @@ cron.schedule('0 18 * * *', async () => {
     console.error('Erreur lors de l\'envoi du bilan :', err.message);
   }
 });
-
-// --- ROUTES ---
 
 const SYSTEM_WHATSAPP =
   "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
@@ -197,7 +191,7 @@ app.post('/webhook', async (req, res) => {
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
   } catch (err) {
-    console.error('Erreur Webhook:', err.message);
+    console.error('Erreur Claude API:', err.message);
     res.set('Content-Type', 'text/xml');
     res.send('<Response><Message>Désolé, une erreur est survenue.</Message></Response>');
   }
