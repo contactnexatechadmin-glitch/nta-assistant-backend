@@ -17,7 +17,7 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 const NUMERO_PATRON = process.env.NUMERO_PATRON;
-const CRON_SECRET = process.env.CRON_SECRET; // NOUVEAU : clé secrète pour protéger la route de déclenchement
+const CRON_SECRET = process.env.CRON_SECRET;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
@@ -28,18 +28,20 @@ const MESSAGE_ACCES_COUPE =
 const MAX_HISTORY = 10;
 
 async function getHistoryFromSupabase(sessionId) {
+  // CORRIGÉ : on récupère les N messages les plus RÉCENTS (ordre descendant),
+  // puis on les remet dans l'ordre chronologique avec .reverse()
   const { data, error } = await supabase
     .from('conversations')
     .select('role, content')
     .eq('session_id', sessionId)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(MAX_HISTORY);
 
   if (error) {
     console.error('Erreur récupération historique Supabase:', error.message);
     return [];
   }
-  return data || [];
+  return (data || []).reverse();
 }
 
 async function getTodayMessages() {
@@ -98,7 +100,7 @@ async function askClaude(history, systemPrompt) {
       'accept-encoding': 'identity',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6', // CORRIGÉ : ancien modèle (claude-3-5-sonnet-20241022) retiré depuis le 19 février 2026
+      model: 'claude-sonnet-4-6',
       max_tokens: 500,
       system: systemPrompt,
       messages: history,
@@ -125,7 +127,7 @@ async function askClaudeReporting(transcript) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6', // CORRIGÉ : même remplacement
+      model: 'claude-sonnet-4-6',
       max_tokens: 300,
       system: systemPrompt,
       messages: [{ role: 'user', content: `Voici les échanges du jour :\n${transcript}` }],
@@ -137,8 +139,6 @@ async function askClaudeReporting(transcript) {
   return data.content[0].text;
 }
 
-// NOUVEAU : la logique du bilan est extraite dans une fonction réutilisable,
-// appelée à la fois par le cron interne ET par la route /trigger-report
 async function envoyerBilanQuotidien() {
   console.log('--- Déclenchement du bilan ---');
   if (!NUMERO_PATRON || !TWILIO_WHATSAPP_NUMBER) {
@@ -170,8 +170,6 @@ async function envoyerBilanQuotidien() {
   }
 }
 
-// Garde-fou interne : reste actif comme filet de sécurité, mais le déclenchement
-// fiable se fait désormais via la route /trigger-report appelée par cron-job.org
 cron.schedule('0 18 * * *', () => {
   envoyerBilanQuotidien();
 });
@@ -186,7 +184,6 @@ app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
 });
 
-// NOUVEAU : route protégée, appelée par cron-job.org à 18h00 chaque jour
 app.get('/trigger-report', async (req, res) => {
   const secretFourni = req.query.secret || req.headers['x-cron-secret'];
   if (!CRON_SECRET || secretFourni !== CRON_SECRET) {
