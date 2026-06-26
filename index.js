@@ -2,22 +2,32 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
+import cron from 'node-cron';
+import twilio from 'twilio';
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(cors());
 
+// Variables d'environnement
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER; // ex: +14155238886
+const NUMERO_PATRON = process.env.NUMERO_PATRON; // ex: +22501020304
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
 
 const MAX_HISTORY = 10;
+
+// --- FONCTIONS SUPABASE ---
 
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
@@ -28,8 +38,25 @@ async function getHistoryFromSupabase(sessionId) {
     .limit(MAX_HISTORY);
 
   if (error) {
-    console.error('Erreur récupération historique Supabase:', error.message);
+    console.error('Erreur récupération historique:', error.message);
     return []; 
+  }
+  return data || [];
+}
+
+async function getTodayMessages() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0); // Minuit aujourd'hui
+  
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('session_id, role, content')
+    .gte('created_at', today.toISOString())
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    console.error('Erreur récupération messages du jour:', error.message);
+    return [];
   }
   return data || [];
 }
@@ -40,13 +67,27 @@ async function saveMessageToSupabase(sessionId, role, content) {
     .insert([{ session_id: sessionId, role, content }]);
 
   if (error) {
-    console.error('Erreur sauvegarde message Supabase:', error.message);
+    console.error('Erreur sauvegarde message:', error.message);
   }
+}
+
+async function estSuspendu(whatsappNumber) {
+  const { data, error } = await supabase
+    .from('clients')
+    .select('suspended')
+    .eq('whatsapp_number', whatsappNumber)
+    .maybeSingle();
+
+  if (error) return false; 
+  if (!data) return false; 
+  return data.suspended === true;
 }
 
 function escapeXml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// --- FONCTIONS CLAUDE IA ---
 
 async function askClaude(history, systemPrompt) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -67,15 +108,15 @@ async function askClaude(history, systemPrompt) {
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Claude API a répondu ${response.status}: ${errText}`);
+    throw new Error(`Erreur API Claude: ${response.status} ${errText}`);
   }
 
   const data = await response.json();
   return data.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
 }
 
-async function askClaudeReporting(history) {
-  const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse l'historique des messages de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques complexes : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi. 3. Le produit le plus demandé.";
+async function askClaudeReporting(transcript) {
+  const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi (donne le numéro du client). 3. Le produit le plus demandé.";
   
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -88,7 +129,7 @@ async function askClaudeReporting(history) {
       model: 'claude-3-5-sonnet-20241022',
       max_tokens: 300,
       system: systemPrompt,
-      messages: history,
+      messages: [{ role: 'user', content: `Voici les échanges du jour :\n${transcript}` }],
     }),
   });
 
@@ -97,20 +138,36 @@ async function askClaudeReporting(history) {
   return data.content[0].text;
 }
 
-async function estSuspendu(whatsappNumber) {
-  const { data, error } = await supabase
-    .from('clients')
-    .select('suspended')
-    .eq('whatsapp_number', whatsappNumber)
-    .maybeSingle();
+// --- TÂCHE AUTOMATIQUE (CRON) À 18H00 ---
 
-  if (error) {
-    console.error('Erreur lecture statut Supabase:', error.message);
-    return false; 
+cron.schedule('0 18 * * *', async () => {
+  console.log('--- Déclenchement du bilan de 18h00 ---');
+  if (!NUMERO_PATRON || !TWILIO_WHATSAPP_NUMBER) {
+    console.log('Annulé : NUMERO_PATRON ou TWILIO_WHATSAPP_NUMBER manquant.');
+    return;
   }
-  if (!data) return false; 
-  return data.suspended === true;
-}
+  try {
+    const messagesJour = await getTodayMessages();
+    if (messagesJour.length === 0) {
+      console.log('Aucun message aujourd\'hui. Pas de bilan envoyé.');
+      return;
+    }
+    
+    const transcript = messagesJour.map(m => `${m.role === 'user' ? 'Client '+m.session_id : 'Bot'} : ${m.content}`).join('\n');
+    const bilan = await askClaudeReporting(transcript);
+    
+    await twilioClient.messages.create({
+      from: `whatsapp:${TWILIO_WHATSAPP_NUMBER}`,
+      to: `whatsapp:${NUMERO_PATRON}`,
+      body: `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`
+    });
+    console.log('Bilan envoyé avec succès sur WhatsApp !');
+  } catch (err) {
+    console.error('Erreur lors de l\'envoi du bilan :', err.message);
+  }
+});
+
+// --- ROUTES ---
 
 const SYSTEM_WHATSAPP =
   "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
@@ -140,7 +197,7 @@ app.post('/webhook', async (req, res) => {
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
   } catch (err) {
-    console.error('Erreur Claude API:', err.message);
+    console.error('Erreur Webhook:', err.message);
     res.set('Content-Type', 'text/xml');
     res.send('<Response><Message>Désolé, une erreur est survenue.</Message></Response>');
   }
@@ -157,22 +214,6 @@ app.post('/demo', async (req, res) => {
     res.json({ reply });
   } catch (err) {
     res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-app.get('/bilan/:numero', async (req, res) => {
-  const { numero } = req.params;
-  try {
-    const history = await getHistoryFromSupabase(numero);
-    if (history.length === 0) {
-      return res.send('Aucun message enregistré pour ce commerçant aujourd\'hui.');
-    }
-    const resume = await askClaudeReporting(history);
-    res.set('Content-Type', 'text/plain; charset=utf-8');
-    res.send(`--- BILAN EXPRESS NTA ---\n\n${resume}`);
-  } catch (err) {
-    console.error('Erreur Bilan:', err.message);
-    res.status(500).send('Erreur lors de la génération du bilan.');
   }
 });
 
