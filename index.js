@@ -27,9 +27,13 @@ const MESSAGE_ACCES_COUPE =
 
 const MAX_HISTORY = 10;
 
-// NOUVEAU : règle de formatage commune à injecter dans tous les system prompts destinés à WhatsApp
+// Règle de formatage : un seul astérisque pour le gras, jamais deux (Markdown)
 const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
+
+// NOUVEAU : règle de modération des émoticônes d'émotion
+const REGLE_EMOTICONES =
+  "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
@@ -119,7 +123,7 @@ async function askClaude(history, systemPrompt) {
 }
 
 async function askClaudeReporting(transcript) {
-  const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi (donne le numéro du client). 3. Le produit le plus demandé." + REGLE_FORMATAGE_WHATSAPP;
+  const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi (donne le numéro du client). 3. Le produit le plus demandé." + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -177,10 +181,10 @@ cron.schedule('0 18 * * *', () => {
 });
 
 const SYSTEM_WHATSAPP =
-  "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents." + REGLE_FORMATAGE_WHATSAPP;
+  "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents." + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
 const SYSTEM_DEMO =
-  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP;
+  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
 app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
