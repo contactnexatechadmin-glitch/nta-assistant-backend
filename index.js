@@ -36,6 +36,60 @@ const REGLE_FORMATAGE_WHATSAPP =
 const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
+// ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
+//
+// Depuis le 31 janvier 2021, la Côte d'Ivoire est passée de 8 à 10 chiffres.
+// Selon l'opérateur d'origine, il faut ajouter un préfixe fixe devant l'ancien
+// numéro à 8 chiffres pour obtenir le nouveau numéro à 10 chiffres :
+//   - Moov  → préfixe "01"
+//   - MTN   → préfixe "05"
+//   - Orange→ préfixe "07"
+// Certains téléphones/opérateurs transmettent encore l'ancien format à Twilio.
+// Cette fonction ramène TOUJOURS un numéro vers le même format canonique (10
+// chiffres), pour qu'un même client ne soit jamais compté comme deux clients
+// différents selon le format reçu ce jour-là.
+
+const PREFIXES_MOOV = ['01', '02', '03', '40', '41', '42', '43', '50', '51', '52', '53', '70', '71', '72', '73'];
+const PREFIXES_MTN = ['04', '05', '06', '44', '45', '46', '54', '55', '56', '64', '65', '66', '74', '75', '76', '84', '85', '86', '94', '95', '96'];
+const PREFIXES_ORANGE = ['07', '08', '09', '47', '48', '49', '57', '58', '59', '67', '68', '69', '77', '78', '79', '87', '88', '89', '97', '98'];
+
+function normaliserNumeroIvoirien(numeroBrut) {
+  if (!numeroBrut) return numeroBrut;
+
+  const aPrefixeWhatsapp = numeroBrut.startsWith('whatsapp:');
+  let digits = numeroBrut.replace('whatsapp:', '').replace('+', '');
+
+  // Retire le code pays 225 s'il est présent, pour travailler sur le numéro local
+  if (digits.startsWith('225')) {
+    digits = digits.slice(3);
+  } else {
+    // Numéro non-ivoirien (ex: numéro sandbox US +1...) : on ne touche à rien
+    return numeroBrut;
+  }
+
+  let numeroLocalFinal = digits;
+
+  if (digits.length === 8) {
+    // Ancien format : on retrouve l'opérateur via les 2 premiers chiffres
+    const prefixeAncien = digits.slice(0, 2);
+    let prefixeNouveau = null;
+    if (PREFIXES_MOOV.includes(prefixeAncien)) prefixeNouveau = '01';
+    else if (PREFIXES_MTN.includes(prefixeAncien)) prefixeNouveau = '05';
+    else if (PREFIXES_ORANGE.includes(prefixeAncien)) prefixeNouveau = '07';
+
+    if (prefixeNouveau) {
+      numeroLocalFinal = prefixeNouveau + digits;
+    } else {
+      console.warn(`Numéro ivoirien à 8 chiffres non reconnu (préfixe ${prefixeAncien}) : ${numeroBrut}`);
+    }
+  }
+  // Si digits.length === 10, c'est déjà le nouveau format : rien à faire.
+  // Tout autre cas (longueur inattendue) : on laisse tel quel, par sécurité.
+
+  const resultat = `+225${numeroLocalFinal}`;
+  return aPrefixeWhatsapp ? `whatsapp:${resultat}` : resultat;
+}
+
 // ─── PROFIL CLIENT ────────────────────────────────────────────────────────────
 
 /**
@@ -216,7 +270,7 @@ function escapeXml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ─── CLAUDE ──────────────────────────────────────────────────────────────────
+// ─── SÉCURITÉ WEBHOOK ─────────────────────────────────────────────────────────
 
 function verifierSignatureTwilio(req, res, next) {
   const signatureRecue = req.headers['x-twilio-signature'];
@@ -236,6 +290,8 @@ function verifierSignatureTwilio(req, res, next) {
 
   next();
 }
+
+// ─── CLAUDE ──────────────────────────────────────────────────────────────────
 
 async function askClaude(history, systemPrompt) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -264,7 +320,15 @@ async function askClaude(history, systemPrompt) {
 }
 
 async function askClaudeReporting(transcript) {
-  const systemPrompt = "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : 1. Combien de clients ont écrit. 2. Qui veut acheter immédiatement et quoi (donne le numéro du client). 3. Le produit le plus demandé." + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+  // NOUVEAU : règle explicite pour ne pas confondre "demande de prix" et "intention d'achat confirmée"
+  const systemPrompt =
+    "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : " +
+    "1. Combien de clients ont écrit. " +
+    "2. Qui a CONFIRMÉ vouloir acheter et quoi (donne le numéro du client) — UNIQUEMENT si le client a exprimé une intention claire de finaliser (ex: \"je le prends\", \"je commande\", \"envoyez les détails de livraison\", a donné une adresse ou confirmé un paiement). " +
+    "IMPORTANT : un client qui a SEULEMENT demandé un prix, un stock, ou une information, SANS confirmer vouloir acheter, n'est PAS un client prêt à acheter — dis plutôt qu'il \"s'est renseigné sur le prix\" ou \"a montré de l'intérêt sans confirmer\", ne dis jamais qu'il est \"prêt à commander\" dans ce cas. " +
+    "Si aucun client n'a confirmé d'achat, dis-le clairement plutôt que d'exagérer une simple demande de prix. " +
+    "3. Le produit le plus demandé." +
+    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -348,7 +412,8 @@ app.get('/trigger-report', async (req, res) => {
 
 app.post('/webhook', verifierSignatureTwilio, async (req, res) => {
   const incomingMsg = req.body.Body;
-  const from = req.body.From;
+  // NOUVEAU : normalisation du numéro dès la réception, avant tout usage
+  const from = normaliserNumeroIvoirien(req.body.From);
 
   if (!incomingMsg || !from) {
     res.set('Content-Type', 'text/xml');
