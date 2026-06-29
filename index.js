@@ -25,38 +25,131 @@ const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
 
-const MAX_HISTORY = 10;
+// Augmenté à 20 messages (suffisant pour tout échange en cours, économique en tokens)
+const MAX_HISTORY = 20;
 
-// URL publique fixe du backend, utilisée pour la vérification de signature Twilio
 const URL_BACKEND = 'https://nta-assistant-backend.onrender.com';
 
-// Règle de formatage : un seul astérisque pour le gras, jamais deux (Markdown)
 const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
 
-// NOUVEAU : règle de modération des émoticônes d'émotion
 const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
-// NOUVEAU : middleware de vérification de la signature Twilio sur le webhook
-function verifierSignatureTwilio(req, res, next) {
-  const signatureRecue = req.headers['x-twilio-signature'];
-  const urlComplete = `${URL_BACKEND}${req.originalUrl}`;
+// ─── PROFIL CLIENT ────────────────────────────────────────────────────────────
 
-  const estValide = twilio.validateRequest(
-    TWILIO_AUTH_TOKEN,
-    signatureRecue,
-    urlComplete,
-    req.body
-  );
+/**
+ * Récupère le profil d'un client depuis Supabase.
+ * La table `client_profiles` doit exister avec les colonnes :
+ *   - whatsapp_number (text, primary key)
+ *   - profile (jsonb)
+ *   - updated_at (timestamptz)
+ */
+async function getClientProfile(whatsappNumber) {
+  const { data, error } = await supabase
+    .from('client_profiles')
+    .select('profile')
+    .eq('whatsapp_number', whatsappNumber)
+    .maybeSingle();
 
-  if (!estValide) {
-    console.log('⚠️ Requête webhook rejetée — signature Twilio invalide ou absente');
-    return res.status(403).send('Accès refusé');
+  if (error) {
+    console.error('Erreur lecture profil client:', error.message);
+    return null;
   }
-
-  next();
+  return data ? data.profile : null;
 }
+
+/**
+ * Sauvegarde ou met à jour le profil d'un client.
+ * On fusionne avec l'existant pour ne jamais écraser des données déjà présentes.
+ */
+async function saveClientProfile(whatsappNumber, profileUpdate) {
+  const existing = await getClientProfile(whatsappNumber);
+  const merged = { ...(existing || {}), ...profileUpdate };
+
+  const { error } = await supabase
+    .from('client_profiles')
+    .upsert({ whatsapp_number: whatsappNumber, profile: merged, updated_at: new Date().toISOString() });
+
+  if (error) {
+    console.error('Erreur sauvegarde profil client:', error.message);
+  }
+}
+
+/**
+ * Formate le profil en une ligne compacte pour injection dans le system prompt.
+ * Ex : "Profil client — Nom: Aya | Prix Robe Bleue: 5000F | VIP: oui"
+ * Coût : ~15-20 tokens. Négligeable.
+ */
+function formatProfileForPrompt(profile) {
+  if (!profile || Object.keys(profile).length === 0) return '';
+
+  const parts = Object.entries(profile)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(' | ');
+
+  return `\n\n[Profil client connu] ${parts}`;
+}
+
+/**
+ * Demande à Claude d'extraire les infos importantes de la conversation
+ * pour mettre à jour le profil client. Appel léger (max_tokens: 150).
+ * Ne s'exécute que si la conversation contient des infos potentiellement utiles.
+ */
+async function extractAndUpdateProfile(whatsappNumber, history) {
+  // On ne tente l'extraction que si l'historique est suffisant
+  if (!history || history.length < 2) return;
+
+  const transcript = history
+    .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
+    .join('\n');
+
+  const extractionPrompt = `Analyse cet échange WhatsApp entre un client et un bot de boutique.
+Extrait UNIQUEMENT les informations factuelles importantes sur ce client spécifique : prénom, produits préférés, prix négociés, statut VIP, préférences de livraison, ou tout accord commercial.
+Réponds UNIQUEMENT avec un objet JSON compact. Si aucune info utile, réponds avec {}.
+Exemples valides :
+{"nom":"Aya","prix_robe_bleue":"5000F","vip":"oui"}
+{"nom":"Konan","livraison":"Cocody"}
+{}
+
+Échange :
+${transcript}`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'accept-encoding': 'identity',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 150,
+        messages: [{ role: 'user', content: extractionPrompt }],
+      }),
+    });
+
+    if (!response.ok) return;
+
+    const data = await response.json();
+    const raw = data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+
+    if (!raw || raw === '{}') return;
+
+    const profileUpdate = JSON.parse(raw);
+    if (Object.keys(profileUpdate).length > 0) {
+      await saveClientProfile(whatsappNumber, profileUpdate);
+      console.log(`Profil mis à jour pour ${whatsappNumber}:`, profileUpdate);
+    }
+  } catch (err) {
+    // Extraction silencieuse — une erreur ici ne doit jamais bloquer la réponse principale
+    console.error('Extraction profil échouée (non bloquant):', err.message);
+  }
+}
+
+// ─── HISTORIQUE ───────────────────────────────────────────────────────────────
 
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
@@ -100,6 +193,8 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
+// ─── ACCÈS ────────────────────────────────────────────────────────────────────
+
 async function estSuspendu(whatsappNumber) {
   const { data, error } = await supabase
     .from('clients')
@@ -115,8 +210,31 @@ async function estSuspendu(whatsappNumber) {
   return data.suspended === true;
 }
 
+// ─── UTILITAIRES ─────────────────────────────────────────────────────────────
+
 function escapeXml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── CLAUDE ──────────────────────────────────────────────────────────────────
+
+function verifierSignatureTwilio(req, res, next) {
+  const signatureRecue = req.headers['x-twilio-signature'];
+  const urlComplete = `${URL_BACKEND}${req.originalUrl}`;
+
+  const estValide = twilio.validateRequest(
+    TWILIO_AUTH_TOKEN,
+    signatureRecue,
+    urlComplete,
+    req.body
+  );
+
+  if (!estValide) {
+    console.log('⚠️ Requête webhook rejetée — signature Twilio invalide ou absente');
+    return res.status(403).send('Accès refusé');
+  }
+
+  next();
 }
 
 async function askClaude(history, systemPrompt) {
@@ -168,6 +286,8 @@ async function askClaudeReporting(transcript) {
   return data.content[0].text;
 }
 
+// ─── BILAN QUOTIDIEN ──────────────────────────────────────────────────────────
+
 async function envoyerBilanQuotidien() {
   console.log('--- Déclenchement du bilan ---');
   if (!NUMERO_PATRON || !TWILIO_WHATSAPP_NUMBER) {
@@ -178,7 +298,7 @@ async function envoyerBilanQuotidien() {
     const messagesJour = await getTodayMessages();
     if (messagesJour.length === 0) {
       console.log("Aucun message aujourd'hui. Pas de bilan envoyé.");
-      return { envoye: false, raison: 'Aucun message aujourd\'hui' };
+      return { envoye: false, raison: "Aucun message aujourd'hui" };
     }
 
     const transcript = messagesJour
@@ -203,11 +323,15 @@ cron.schedule('0 18 * * *', () => {
   envoyerBilanQuotidien();
 });
 
-const SYSTEM_WHATSAPP =
+// ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
+
+const SYSTEM_WHATSAPP_BASE =
   "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents." + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+
+// ─── ROUTES ───────────────────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
@@ -225,6 +349,7 @@ app.get('/trigger-report', async (req, res) => {
 app.post('/webhook', verifierSignatureTwilio, async (req, res) => {
   const incomingMsg = req.body.Body;
   const from = req.body.From;
+
   if (!incomingMsg || !from) {
     res.set('Content-Type', 'text/xml');
     return res.send('<Response></Response>');
@@ -237,10 +362,27 @@ app.post('/webhook', verifierSignatureTwilio, async (req, res) => {
       return res.send(`<Response><Message>${escapeXml(MESSAGE_ACCES_COUPE)}</Message></Response>`);
     }
 
+    // Sauvegarde du message entrant
     await saveMessageToSupabase(from, 'user', incomingMsg);
-    const history = await getHistoryFromSupabase(from);
-    const reply = await askClaude(history, SYSTEM_WHATSAPP);
+
+    // Récupération parallèle : historique + profil client
+    const [history, profile] = await Promise.all([
+      getHistoryFromSupabase(from),
+      getClientProfile(from),
+    ]);
+
+    // Injection du profil dans le system prompt (coût négligeable ~15 tokens)
+    const profileLine = formatProfileForPrompt(profile);
+    const systemPrompt = SYSTEM_WHATSAPP_BASE + profileLine;
+
+    // Réponse principale
+    const reply = await askClaude(history, systemPrompt);
     await saveMessageToSupabase(from, 'assistant', reply);
+
+    // Extraction et mise à jour du profil en arrière-plan (non bloquant)
+    // On passe l'historique complet + le nouveau message pour une meilleure extraction
+    const historyForExtraction = [...history, { role: 'assistant', content: reply }];
+    extractAndUpdateProfile(from, historyForExtraction).catch(() => {});
 
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
@@ -264,6 +406,8 @@ app.post('/demo', async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
+
+// ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Serveur lancé sur le port ${PORT}`));
