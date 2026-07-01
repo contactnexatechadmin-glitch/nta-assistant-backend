@@ -18,6 +18,7 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 const NUMERO_PATRON = process.env.NUMERO_PATRON;
 const CRON_SECRET = process.env.CRON_SECRET;
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
@@ -34,8 +35,7 @@ const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
 
 const REGLE_EMOTICONES =
-  "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es PAS obligé d'en mettre une dans chaque message — la plupart de tes messages n'en ont besoin d'aucune. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. " +
-  "Concernant les émoticônes représentant un produit ou objet concret (ex: 🚗 pour une voiture, 👠 pour des talons) : utilise-en UNIQUEMENT s'il existe un emoji qui représente FIDÈLEMENT et PRÉCISÉMENT l'objet exact dont tu parles. Ne JAMAIS utiliser un emoji approximatif ou 'proche' comme substitut (par exemple, ne mets PAS 👗 (robe) pour parler d'un pagne, d'un boubou ou d'un tissu — ces objets n'ont pas d'emoji dédié, donc dans ce cas n'utilise AUCUNE émoticône). En cas de doute sur l'exactitude d'un emoji, abstiens-toi plutôt que d'approximer. Comme pour les émoticônes d'émotion, tu n'es jamais obligé d'en mettre une — uniquement si elle est exacte ET utile.";
+  "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -400,6 +400,23 @@ const SYSTEM_DEMO =
 
 app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
+});
+
+// Route de vérification pour le Webhook Meta (Semaine 2, Étape 1)
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+      console.log('WEBHOOK_VERIFIED');
+      return res.status(200).send(challenge);
+    } else {
+      return res.sendStatus(403);
+    }
+  }
+  return res.sendStatus(400);
 });
 
 app.get('/trigger-report', async (req, res) => {
