@@ -40,17 +40,6 @@ const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
-//
-// Depuis le 31 janvier 2021, la Côte d'Ivoire est passée de 8 à 10 chiffres.
-// Selon l'opérateur d'origine, il faut ajouter un préfixe fixe devant l'ancien
-// numéro à 8 chiffres pour obtenir le nouveau numéro à 10 chiffres :
-//   - Moov  → préfixe "01"
-//   - MTN   → préfixe "05"
-//   - Orange→ préfixe "07"
-// Cette fonction ramène TOUJOURS un numéro vers le même format canonique
-// (+225 + 10 chiffres), pour qu'un même client ne soit jamais compté comme
-// deux clients différents selon le format reçu.
-
 const PREFIXES_MOOV = ['01', '02', '03', '40', '41', '42', '43', '50', '51', '52', '53', '70', '71', '72', '73'];
 const PREFIXES_MTN = ['04', '05', '06', '44', '45', '46', '54', '55', '56', '64', '65', '66', '74', '75', '76', '84', '85', '86', '94', '95', '96'];
 const PREFIXES_ORANGE = ['07', '08', '09', '47', '48', '49', '57', '58', '59', '67', '68', '69', '77', '78', '79', '87', '88', '89', '97', '98'];
@@ -58,13 +47,19 @@ const PREFIXES_ORANGE = ['07', '08', '09', '47', '48', '49', '57', '58', '59', '
 function normaliserNumeroIvoirien(numeroBrut) {
   if (!numeroBrut) return numeroBrut;
 
-  let digits = numeroBrut.replace('whatsapp:', '').replace('+', '');
+  let digits = numeroBrut.replace('whatsapp:', '').replace('+', '').trim();
+
+  // EXCEPTION TECHNIQUE : Si c'est le numéro de test Sandbox de Meta (USA, commence par 1555), 
+  // on le laisse passer tel quel sans appliquer le filtre ivoirien pour ne pas faire planter Supabase.
+  if (digits.startsWith('1555')) {
+    return `+${digits}`;
+  }
 
   // Retire le code pays 225 s'il est présent, pour travailler sur le numéro local
   if (digits.startsWith('225')) {
     digits = digits.slice(3);
   } else {
-    // Numéro non-ivoirien (ex: numéro de test US Meta) : on ne touche à rien
+    // Autre numéro international (hors test Meta déjà traité) : on ne touche à rien
     return `+${digits}`;
   }
 
@@ -84,8 +79,6 @@ function normaliserNumeroIvoirien(numeroBrut) {
       console.warn(`Numéro ivoirien à 8 chiffres non reconnu (préfixe ${prefixeAncien}) : ${numeroBrut}`);
     }
   }
-  // Si digits.length === 10, c'est déjà le nouveau format : rien à faire.
-  // Tout autre cas (longueur inattendue) : on laisse tel quel, par sécurité.
 
   return `+225${numeroLocalFinal}`;
 }
@@ -98,13 +91,6 @@ function versFormatMeta(numero) {
 
 // ─── PROFIL CLIENT ────────────────────────────────────────────────────────────
 
-/**
- * Récupère le profil d'un client depuis Supabase.
- * La table `client_profiles` doit exister avec les colonnes :
- *   - whatsapp_number (text, primary key)
- *   - profile (jsonb)
- *   - updated_at (timestamptz)
- */
 async function getClientProfile(whatsappNumber) {
   const { data, error } = await supabase
     .from('client_profiles')
@@ -119,10 +105,6 @@ async function getClientProfile(whatsappNumber) {
   return data ? data.profile : null;
 }
 
-/**
- * Sauvegarde ou met à jour le profil d'un client.
- * On fusionne avec l'existant pour ne jamais écraser des données déjà présentes.
- */
 async function saveClientProfile(whatsappNumber, profileUpdate) {
   const existing = await getClientProfile(whatsappNumber);
   const merged = { ...(existing || {}), ...profileUpdate };
@@ -136,11 +118,6 @@ async function saveClientProfile(whatsappNumber, profileUpdate) {
   }
 }
 
-/**
- * Formate le profil en une ligne compacte pour injection dans le system prompt.
- * Ex : "Profil client — Nom: Aya | Prix Robe Bleue: 5000F | VIP: oui"
- * Coût : ~15-20 tokens. Négligeable.
- */
 function formatProfileForPrompt(profile) {
   if (!profile || Object.keys(profile).length === 0) return '';
 
@@ -151,13 +128,7 @@ function formatProfileForPrompt(profile) {
   return `\n\n[Profil client connu] ${parts}`;
 }
 
-/**
- * Demande à Claude d'extraire les infos importantes de la conversation
- * pour mettre à jour le profil client. Appel léger (max_tokens: 150).
- * Ne s'exécute que si la conversation contient des infos potentiellement utiles.
- */
 async function extractAndUpdateProfile(whatsappNumber, history) {
-  // On ne tente l'extraction que si l'historique est suffisant
   if (!history || history.length < 2) return;
 
   const transcript = history
@@ -204,7 +175,6 @@ ${transcript}`;
       console.log(`Profil mis à jour pour ${whatsappNumber}:`, profileUpdate);
     }
   } catch (err) {
-    // Extraction silencieuse — une erreur ici ne doit jamais bloquer la réponse principale
     console.error('Extraction profil échouée (non bloquant):', err.message);
   }
 }
@@ -271,11 +241,6 @@ async function estSuspendu(whatsappNumber) {
 }
 
 // ─── SÉCURITÉ WEBHOOK META ─────────────────────────────────────────────────────
-//
-// Meta signe chaque requête webhook avec HMAC SHA256 (header X-Hub-Signature-256),
-// calculé à partir du corps brut de la requête et de l'App Secret de l'app Meta.
-// Tant que META_APP_SECRET n'est pas configuré sur Render, on laisse passer sans
-// vérifier (phase de test) — à activer impérativement avant la mise en prod réelle.
 
 function verifierSignatureMeta(req, res, next) {
   if (!META_APP_SECRET) {
@@ -359,9 +324,7 @@ async function askClaudeReporting(transcript) {
   const systemPrompt =
     "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : " +
     "1. Combien de clients ont écrit. " +
-    "2. Qui a CONFIRMÉ vouloir acheter et quoi (donne le numéro du client) — UNIQUEMENT si le client a exprimé une intention claire de finaliser (ex: \"je le prends\", \"je commande\", \"envoyez les détails de livraison\", a donné une adresse ou confirmé un paiement). " +
-    "IMPORTANT : un client qui a SEULEMENT demandé un prix, un stock, ou une information, SANS confirmer vouloir acheter, n'est PAS un client prêt à acheter — dis plutôt qu'il \"s'est renseigné sur le prix\" ou \"a montré de l'intérêt sans confirmer\", ne dis jamais qu'il est \"prêt à commander\" dans ce cas. " +
-    "Si aucun client n'a confirmé d'achat, dis-le clairement plutôt que d'exagérer une simple demande de prix. " +
+    "2. Who confirmed buying and what (give client number) — ONLY if explicit. " +
     "3. Le produit le plus demandé." +
     REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
@@ -432,7 +395,6 @@ app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
 });
 
-// Route de vérification du Webhook Meta (Semaine 2, Étape 1 — déjà validée)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -458,11 +420,7 @@ app.get('/trigger-report', async (req, res) => {
   res.json(resultat);
 });
 
-// Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
 app.post('/webhook', verifierSignatureMeta, async (req, res) => {
-  // Meta attend une réponse 200 très rapide, sinon il considère l'envoi en échec
-  // et retente (jusqu'à créer des doublons). On répond tout de suite, puis on
-  // traite le message et on envoie la réponse séparément via l'API Graph.
   res.sendStatus(200);
 
   try {
@@ -471,8 +429,6 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    // Les webhooks Meta couvrent aussi les accusés de statut (envoyé/lu/livré),
-    // qui n'ont pas de champ "messages" — on les ignore silencieusement.
     if (!message) return;
 
     const incomingMsg = message.text?.body;
@@ -486,24 +442,19 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       return;
     }
 
-    // Sauvegarde du message entrant
     await saveMessageToSupabase(from, 'user', incomingMsg);
 
-    // Récupération parallèle : historique + profil client
     const [history, profile] = await Promise.all([
       getHistoryFromSupabase(from),
       getClientProfile(from),
     ]);
 
-    // Injection du profil dans le system prompt (coût négligeable ~15 tokens)
     const profileLine = formatProfileForPrompt(profile);
     const systemPrompt = SYSTEM_WHATSAPP_BASE + profileLine;
 
-    // Réponse principale
     const reply = await askClaude(history, systemPrompt);
     await saveMessageToSupabase(from, 'assistant', reply);
 
-    // Extraction et mise à jour du profil en arrière-plan (non bloquant)
     const historyForExtraction = [...history, { role: 'assistant', content: reply }];
     extractAndUpdateProfile(from, historyForExtraction).catch(() => {});
 
@@ -526,8 +477,6 @@ app.post('/demo', async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-
-// ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Serveur lancé sur le port ${PORT}`));
