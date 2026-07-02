@@ -31,7 +31,7 @@ const MESSAGE_ACCES_COUPE =
 const MAX_HISTORY = 20;
 
 const REGLE_FORMATAGE_WHATSAPP =
-  "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
+  "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
 
 const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
@@ -72,7 +72,6 @@ function normaliserNumeroIvoirien(numeroBrut) {
 }
 
 function versFormatMeta(numero) {
-  // On extrait STRICTEMENT les chiffres pour Meta
   return numero.replace('whatsapp:', '').replace('+', '').trim();
 }
 
@@ -175,14 +174,11 @@ function verifierSignatureMeta(req, res, next) {
   next();
 }
 
-// CORRECTION STRUCTURELLE DE L'ENVOI POUR LA SANDBOX
 async function sendWhatsAppMessage(to, text) {
   let toMeta = versFormatMeta(to);
   
-  // Si le numéro commence par 225 et échoue, la Sandbox attend peut-être le format local sans 225
-  // Pour parer à toute éventualité en Semaine 1, on nettoie drastiquement
   if (toMeta.startsWith('2250758015720')) {
-    toMeta = '2250758015720'; // Format international strict sans espace ni parasite
+    toMeta = '2250758015720';
   }
 
   const response = await fetch(`https://graph.facebook.com/v20.0/${META_PHONE_NUMBER_ID}/messages`, {
@@ -202,7 +198,7 @@ async function sendWhatsAppMessage(to, text) {
   if (!response.ok) {
     const errText = await response.text();
     console.error('Erreur envoi message Meta:', response.status, errText);
-    throw new Error(`Meta API a répondu ${response.status}: ${errText}`);
+    throw new Error(`Meta API a répondu ${status}: ${errText}`);
   }
 
   return response.json();
@@ -288,22 +284,36 @@ app.get('/trigger-report', async (req, res) => {
 });
 
 app.post('/webhook', verifierSignatureMeta, async (req, res) => {
+  // SONDE DE DIAGNOSTIC BRUT — Pour voir EXACTEMENT ce que Meta envoie
+  console.log('=== WEBHOOK ENTRANT DETECTE ===');
+  console.log(JSON.stringify(req.body, null, 2));
+
   res.sendStatus(200);
   try {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
-    const message = value?.messages?.[0];
+    
+    // Log des statuts ou des messages reçus
+    if (value?.statuses) {
+      console.log(`[Status Update] Statut de message détecté (sent/delivered/read).`);
+    }
 
-    if (!message) return;
+    const message = value?.messages?.[0];
+    if (!message) {
+      console.log('-> Aucun message textuel exploitable dans cette charge utile.');
+      return;
+    }
 
     const incomingMsg = message.text?.body;
     const from = normaliserNumeroIvoirien(message.from);
+    console.log(`-> Message extrait : "${incomingMsg}" de ${from}`);
 
     if (!incomingMsg || !from) return;
 
     const suspendu = await estSuspendu(from);
     if (suspendu) {
+      console.log(`-> Client ${from} suspendu.`);
       await sendWhatsAppMessage(from, MESSAGE_ACCES_COUPE);
       return;
     }
@@ -319,14 +329,17 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const systemPrompt = SYSTEM_WHATSAPP_BASE + profileLine;
 
     const reply = await askClaude(history, systemPrompt);
+    console.log(`-> Réponse Claude générée : "${reply}"`);
+    
     await saveMessageToSupabase(from, 'assistant', reply);
 
     const historyForExtraction = [...history, { role: 'assistant', content: reply }];
     extractAndUpdateProfile(from, historyForExtraction).catch(() => {});
 
     await sendWhatsAppMessage(from, reply);
+    console.log(`-> Réponse Meta expédiée avec succès à ${from}`);
   } catch (err) {
-    console.error('Erreur traitement webhook Meta:', err.message);
+    console.error('❌ Erreur traitement webhook Meta:', err.message);
   }
 });
 
