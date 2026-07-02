@@ -1,35 +1,37 @@
 import express from 'express';
-import bodyParser from 'body-parser';
 import cors from 'cors';
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import cron from 'node-cron';
-import twilio from 'twilio';
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(express.json());
+
+// verify() capture le corps brut de la requête, nécessaire pour valider la
+// signature HMAC de Meta (X-Hub-Signature-256) une fois META_APP_SECRET configuré.
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 app.use(cors());
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_WHATSAPP_NUMBER = process.env.TWILIO_WHATSAPP_NUMBER;
 const NUMERO_PATRON = process.env.NUMERO_PATRON;
 const CRON_SECRET = process.env.CRON_SECRET;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
+const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const META_APP_SECRET = process.env.META_APP_SECRET; // optionnel pour l'instant, à activer avant la prod réelle
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
 
 // Augmenté à 20 messages (suffisant pour tout échange en cours, économique en tokens)
 const MAX_HISTORY = 20;
-
-const URL_BACKEND = 'https://nta-assistant-backend.onrender.com';
 
 const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
@@ -45,10 +47,9 @@ const REGLE_EMOTICONES =
 //   - Moov  → préfixe "01"
 //   - MTN   → préfixe "05"
 //   - Orange→ préfixe "07"
-// Certains téléphones/opérateurs transmettent encore l'ancien format à Twilio.
-// Cette fonction ramène TOUJOURS un numéro vers le même format canonique (10
-// chiffres), pour qu'un même client ne soit jamais compté comme deux clients
-// différents selon le format reçu ce jour-là.
+// Cette fonction ramène TOUJOURS un numéro vers le même format canonique
+// (+225 + 10 chiffres), pour qu'un même client ne soit jamais compté comme
+// deux clients différents selon le format reçu.
 
 const PREFIXES_MOOV = ['01', '02', '03', '40', '41', '42', '43', '50', '51', '52', '53', '70', '71', '72', '73'];
 const PREFIXES_MTN = ['04', '05', '06', '44', '45', '46', '54', '55', '56', '64', '65', '66', '74', '75', '76', '84', '85', '86', '94', '95', '96'];
@@ -57,15 +58,14 @@ const PREFIXES_ORANGE = ['07', '08', '09', '47', '48', '49', '57', '58', '59', '
 function normaliserNumeroIvoirien(numeroBrut) {
   if (!numeroBrut) return numeroBrut;
 
-  const aPrefixeWhatsapp = numeroBrut.startsWith('whatsapp:');
   let digits = numeroBrut.replace('whatsapp:', '').replace('+', '');
 
   // Retire le code pays 225 s'il est présent, pour travailler sur le numéro local
   if (digits.startsWith('225')) {
     digits = digits.slice(3);
   } else {
-    // Numéro non-ivoirien (ex: numéro sandbox US +1...) : on ne touche à rien
-    return numeroBrut;
+    // Numéro non-ivoirien (ex: numéro de test US Meta) : on ne touche à rien
+    return `+${digits}`;
   }
 
   let numeroLocalFinal = digits;
@@ -87,8 +87,13 @@ function normaliserNumeroIvoirien(numeroBrut) {
   // Si digits.length === 10, c'est déjà le nouveau format : rien à faire.
   // Tout autre cas (longueur inattendue) : on laisse tel quel, par sécurité.
 
-  const resultat = `+225${numeroLocalFinal}`;
-  return aPrefixeWhatsapp ? `whatsapp:${resultat}` : resultat;
+  return `+225${numeroLocalFinal}`;
+}
+
+// Convertit un numéro au format attendu par l'API Meta : chiffres uniquement,
+// sans "+" ni préfixe "whatsapp:". Ex: "+2250700000000" → "2250700000000"
+function versFormatMeta(numero) {
+  return numero.replace('whatsapp:', '').replace('+', '');
 }
 
 // ─── PROFIL CLIENT ────────────────────────────────────────────────────────────
@@ -265,31 +270,61 @@ async function estSuspendu(whatsappNumber) {
   return data.suspended === true;
 }
 
-// ─── UTILITAIRES ─────────────────────────────────────────────────────────────
+// ─── SÉCURITÉ WEBHOOK META ─────────────────────────────────────────────────────
+//
+// Meta signe chaque requête webhook avec HMAC SHA256 (header X-Hub-Signature-256),
+// calculé à partir du corps brut de la requête et de l'App Secret de l'app Meta.
+// Tant que META_APP_SECRET n'est pas configuré sur Render, on laisse passer sans
+// vérifier (phase de test) — à activer impérativement avant la mise en prod réelle.
 
-function escapeXml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+function verifierSignatureMeta(req, res, next) {
+  if (!META_APP_SECRET) {
+    return next();
+  }
 
-// ─── SÉCURITÉ WEBHOOK ─────────────────────────────────────────────────────────
+  const signatureRecue = req.headers['x-hub-signature-256'];
+  if (!signatureRecue) {
+    console.log('⚠️ Requête webhook Meta rejetée — signature absente');
+    return res.sendStatus(403);
+  }
 
-function verifierSignatureTwilio(req, res, next) {
-  const signatureRecue = req.headers['x-twilio-signature'];
-  const urlComplete = `${URL_BACKEND}${req.originalUrl}`;
+  const signatureAttendue =
+    'sha256=' + crypto.createHmac('sha256', META_APP_SECRET).update(req.rawBody).digest('hex');
 
-  const estValide = twilio.validateRequest(
-    TWILIO_AUTH_TOKEN,
-    signatureRecue,
-    urlComplete,
-    req.body
-  );
-
-  if (!estValide) {
-    console.log('⚠️ Requête webhook rejetée — signature Twilio invalide ou absente');
-    return res.status(403).send('Accès refusé');
+  if (signatureRecue !== signatureAttendue) {
+    console.log('⚠️ Requête webhook Meta rejetée — signature invalide');
+    return res.sendStatus(403);
   }
 
   next();
+}
+
+// ─── ENVOI DE MESSAGES VIA META GRAPH API ─────────────────────────────────────
+
+async function sendWhatsAppMessage(to, text) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${META_PHONE_NUMBER_ID}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'text',
+      text: { body: text },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi message Meta:', response.status, errText);
+    throw new Error(`Meta API a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
 }
 
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
@@ -321,7 +356,6 @@ async function askClaude(history, systemPrompt) {
 }
 
 async function askClaudeReporting(transcript) {
-  // NOUVEAU : règle explicite pour ne pas confondre "demande de prix" et "intention d'achat confirmée"
   const systemPrompt =
     "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : " +
     "1. Combien de clients ont écrit. " +
@@ -355,8 +389,8 @@ async function askClaudeReporting(transcript) {
 
 async function envoyerBilanQuotidien() {
   console.log('--- Déclenchement du bilan ---');
-  if (!NUMERO_PATRON || !TWILIO_WHATSAPP_NUMBER) {
-    console.log('Annulé : NUMERO_PATRON ou TWILIO_WHATSAPP_NUMBER manquant.');
+  if (!NUMERO_PATRON || !META_PHONE_NUMBER_ID) {
+    console.log('Annulé : NUMERO_PATRON ou META_PHONE_NUMBER_ID manquant.');
     return { envoye: false, raison: 'Configuration manquante' };
   }
   try {
@@ -371,11 +405,7 @@ async function envoyerBilanQuotidien() {
       .join('\n');
     const bilan = await askClaudeReporting(transcript);
 
-    await twilioClient.messages.create({
-      from: `whatsapp:${TWILIO_WHATSAPP_NUMBER}`,
-      to: `whatsapp:${NUMERO_PATRON}`,
-      body: `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`,
-    });
+    await sendWhatsAppMessage(NUMERO_PATRON, `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`);
     console.log('Bilan envoyé avec succès sur WhatsApp !');
     return { envoye: true };
   } catch (err) {
@@ -402,7 +432,7 @@ app.get('/', (req, res) => {
   res.send('NTA Assistant backend en ligne ✅');
 });
 
-// Route de vérification pour le Webhook Meta (Semaine 2, Étape 1)
+// Route de vérification du Webhook Meta (Semaine 2, Étape 1 — déjà validée)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -428,21 +458,32 @@ app.get('/trigger-report', async (req, res) => {
   res.json(resultat);
 });
 
-app.post('/webhook', verifierSignatureTwilio, async (req, res) => {
-  const incomingMsg = req.body.Body;
-  // NOUVEAU : normalisation du numéro dès la réception, avant tout usage
-  const from = normaliserNumeroIvoirien(req.body.From);
-
-  if (!incomingMsg || !from) {
-    res.set('Content-Type', 'text/xml');
-    return res.send('<Response></Response>');
-  }
+// Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
+app.post('/webhook', verifierSignatureMeta, async (req, res) => {
+  // Meta attend une réponse 200 très rapide, sinon il considère l'envoi en échec
+  // et retente (jusqu'à créer des doublons). On répond tout de suite, puis on
+  // traite le message et on envoie la réponse séparément via l'API Graph.
+  res.sendStatus(200);
 
   try {
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const message = value?.messages?.[0];
+
+    // Les webhooks Meta couvrent aussi les accusés de statut (envoyé/lu/livré),
+    // qui n'ont pas de champ "messages" — on les ignore silencieusement.
+    if (!message) return;
+
+    const incomingMsg = message.text?.body;
+    const from = normaliserNumeroIvoirien(message.from);
+
+    if (!incomingMsg || !from) return;
+
     const suspendu = await estSuspendu(from);
     if (suspendu) {
-      res.set('Content-Type', 'text/xml');
-      return res.send(`<Response><Message>${escapeXml(MESSAGE_ACCES_COUPE)}</Message></Response>`);
+      await sendWhatsAppMessage(from, MESSAGE_ACCES_COUPE);
+      return;
     }
 
     // Sauvegarde du message entrant
@@ -463,16 +504,12 @@ app.post('/webhook', verifierSignatureTwilio, async (req, res) => {
     await saveMessageToSupabase(from, 'assistant', reply);
 
     // Extraction et mise à jour du profil en arrière-plan (non bloquant)
-    // On passe l'historique complet + le nouveau message pour une meilleure extraction
     const historyForExtraction = [...history, { role: 'assistant', content: reply }];
     extractAndUpdateProfile(from, historyForExtraction).catch(() => {});
 
-    res.set('Content-Type', 'text/xml');
-    res.send(`<Response><Message>${escapeXml(reply)}</Message></Response>`);
+    await sendWhatsAppMessage(from, reply);
   } catch (err) {
-    console.error('Erreur Claude API:', err.message);
-    res.set('Content-Type', 'text/xml');
-    res.send('<Response><Message>Désolé, une erreur est survenue.</Message></Response>');
+    console.error('Erreur traitement webhook Meta:', err.message);
   }
 });
 
