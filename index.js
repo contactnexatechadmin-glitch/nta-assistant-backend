@@ -253,6 +253,27 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
+// ─── COMMERÇANTS (MULTI-TENANT) ───────────────────────────────────────────────
+//
+// Un seul webhook Meta reçoit les messages de TOUS les commerçants. Chaque
+// message entrant contient l'ID du numéro qui l'a reçu (value.metadata.phone_
+// number_id) — c'est cet ID qui permet de savoir quel commerçant est concerné,
+// et donc quel system_prompt utiliser. Table Supabase : `merchants`.
+
+async function getMerchant(phoneNumberId) {
+  const { data, error } = await supabase
+    .from('merchants')
+    .select('phone_number_id, nom_commerce, system_prompt, actif')
+    .eq('phone_number_id', phoneNumberId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Erreur lecture merchant:', error.message);
+    return null;
+  }
+  return data;
+}
+
 // ─── ACCÈS ────────────────────────────────────────────────────────────────────
 
 async function estSuspendu(whatsappNumber) {
@@ -301,10 +322,10 @@ function verifierSignatureMeta(req, res, next) {
 
 // ─── ENVOI DE MESSAGES VIA META GRAPH API ─────────────────────────────────────
 
-async function sendWhatsAppMessage(to, text) {
+async function sendWhatsAppMessage(fromPhoneNumberId, to, text) {
   const toMeta = versFormatMeta(to);
 
-  const response = await fetch(`https://graph.facebook.com/v20.0/${META_PHONE_NUMBER_ID}/messages`, {
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -405,7 +426,10 @@ async function envoyerBilanQuotidien() {
       .join('\n');
     const bilan = await askClaudeReporting(transcript);
 
-    await sendWhatsAppMessage(NUMERO_PATRON, `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`);
+    // NOTE : bilan encore global (tous commerçants confondus), envoyé depuis le
+    // numéro principal. À faire évoluer en bilan par commerçant quand il y aura
+    // plusieurs clients payants actifs.
+    await sendWhatsAppMessage(META_PHONE_NUMBER_ID, NUMERO_PATRON, `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`);
     console.log('Bilan envoyé avec succès sur WhatsApp !');
     return { envoye: true };
   } catch (err) {
@@ -420,8 +444,11 @@ cron.schedule('0 18 * * *', () => {
 
 // ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
 
+// Fallback utilisé uniquement si un commerçant n'a pas encore de system_prompt
+// renseigné dans Supabase — les règles de formatage/émoticônes sont ajoutées
+// une seule fois, centralement, dans le webhook (pas ici).
 const SYSTEM_WHATSAPP_BASE =
-  "Tu es l'assistant WhatsApp de Boutique Adjoua Mode, une boutique de vêtements à Abidjan. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents." + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+  "Tu es l'assistant WhatsApp d'un commerçant ivoirien. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
 
 const SYSTEM_DEMO =
   "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
@@ -475,39 +502,59 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     // qui n'ont pas de champ "messages" — on les ignore silencieusement.
     if (!message) return;
 
+    // ID du numéro Meta qui a REÇU ce message — identifie le commerçant concerné.
+    const phoneNumberId = value?.metadata?.phone_number_id;
     const incomingMsg = message.text?.body;
     const from = normaliserNumeroIvoirien(message.from);
 
-    if (!incomingMsg || !from) return;
+    if (!incomingMsg || !from || !phoneNumberId) return;
 
-    const suspendu = await estSuspendu(from);
+    // Identification du commerçant via son numéro Meta (table `merchants`)
+    const merchant = await getMerchant(phoneNumberId);
+    if (!merchant) {
+      console.error(`Aucun commerçant trouvé pour phone_number_id=${phoneNumberId}`);
+      return;
+    }
+    if (!merchant.actif) {
+      await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_ACCES_COUPE);
+      return;
+    }
+
+    // On isole l'historique et le profil par commerçant ET par client, pour
+    // qu'un même numéro client ne mélange jamais les conversations de deux
+    // commerçants différents.
+    const sessionId = `${phoneNumberId}:${from}`;
+
+    const suspendu = await estSuspendu(sessionId);
     if (suspendu) {
-      await sendWhatsAppMessage(from, MESSAGE_ACCES_COUPE);
+      await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_ACCES_COUPE);
       return;
     }
 
     // Sauvegarde du message entrant
-    await saveMessageToSupabase(from, 'user', incomingMsg);
+    await saveMessageToSupabase(sessionId, 'user', incomingMsg);
 
     // Récupération parallèle : historique + profil client
     const [history, profile] = await Promise.all([
-      getHistoryFromSupabase(from),
-      getClientProfile(from),
+      getHistoryFromSupabase(sessionId),
+      getClientProfile(sessionId),
     ]);
 
-    // Injection du profil dans le system prompt (coût négligeable ~15 tokens)
+    // System prompt propre au commerçant (fallback sur le prompt générique
+    // si jamais system_prompt est vide dans Supabase)
+    const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
     const profileLine = formatProfileForPrompt(profile);
-    const systemPrompt = SYSTEM_WHATSAPP_BASE + profileLine;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + profileLine;
 
     // Réponse principale
     const reply = await askClaude(history, systemPrompt);
-    await saveMessageToSupabase(from, 'assistant', reply);
+    await saveMessageToSupabase(sessionId, 'assistant', reply);
 
     // Extraction et mise à jour du profil en arrière-plan (non bloquant)
     const historyForExtraction = [...history, { role: 'assistant', content: reply }];
-    extractAndUpdateProfile(from, historyForExtraction).catch(() => {});
+    extractAndUpdateProfile(sessionId, historyForExtraction).catch(() => {});
 
-    await sendWhatsAppMessage(from, reply);
+    await sendWhatsAppMessage(phoneNumberId, from, reply);
   } catch (err) {
     console.error('Erreur traitement webhook Meta:', err.message);
   }
