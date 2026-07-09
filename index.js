@@ -270,7 +270,7 @@ async function saveMessageToSupabase(sessionId, role, content) {
 async function getMerchant(phoneNumberId) {
   const { data, error } = await supabase
     .from('merchants')
-    .select('phone_number_id, nom_commerce, system_prompt, actif')
+    .select('phone_number_id, nom_commerce, system_prompt, actif, numero_proprietaire')
     .eq('phone_number_id', phoneNumberId)
     .maybeSingle();
 
@@ -433,6 +433,93 @@ async function askClaudeReporting(transcript) {
   if (!response.ok) throw new Error('Erreur API Reporting');
   const data = await response.json();
   return data.content[0].text;
+}
+
+// ─── DÉTECTION DE COMMANDE CONFIRMÉE (ALERTE IMMÉDIATE) ───────────────────────
+//
+// Contrairement à l'extraction de profil (non-bloquante, silencieuse en cas
+// d'échec), cette détection est critique : une commande manquée est une vente
+// perdue. On attend son résultat avant de considérer le message traité, et en
+// cas d'échec on logue clairement (🚨) pour pouvoir vérifier manuellement,
+// plutôt que de laisser l'erreur disparaître sans trace.
+
+async function detecterCommande(transcript) {
+  const systemPrompt =
+    "Analyse cet échange WhatsApp entre un client et un vendeur. Détecte si le client vient de CONFIRMER une commande dans les DERNIERS messages : il accepte d'acheter, donne une adresse de livraison, précise un moment de livraison, ou confirme vouloir payer. " +
+    "Une simple demande de prix ou d'information NE COMPTE PAS comme une confirmation. " +
+    "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour. " +
+    "Si une commande est confirmée : {\"commande_confirmee\":true,\"produit\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque). " +
+    "Si rien n'est confirmé : {\"commande_confirmee\":false}";
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'accept-encoding': 'identity',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 200,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: `Échange :\n${transcript}` }],
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('🚨 Détection commande — API Claude a répondu', response.status);
+      return { commande_confirmee: false };
+    }
+
+    const data = await response.json();
+    const raw = data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('🚨 Détection commande échouée (vérifier manuellement) :', err.message);
+    return { commande_confirmee: false };
+  }
+}
+
+/**
+ * Envoie une alerte WhatsApp immédiate au propriétaire dès qu'une commande est
+ * confirmée par un client. Une seule alerte par client et par jour (le flag
+ * commande_alertee_le est stocké dans client_profiles et remis à zéro chaque
+ * jour, pour permettre une nouvelle alerte si le même client commande à
+ * nouveau le lendemain).
+ */
+async function detecterEtAlerterCommande(sessionId, merchant, from, history, reply) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const profile = await getClientProfile(sessionId);
+  if (profile?.commande_alertee_le === today) {
+    return; // Déjà alerté aujourd'hui pour ce client — on ne spamme pas le marchand
+  }
+
+  const transcript = [...history, { role: 'assistant', content: reply }]
+    .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
+    .join('\n');
+
+  const detection = await detecterCommande(transcript);
+  if (!detection.commande_confirmee) return;
+
+  if (!merchant.numero_proprietaire) {
+    console.error(`🚨 Commande confirmée pour ${merchant.nom_commerce} mais numero_proprietaire manquant — alerte impossible, vérifier Supabase`);
+    return;
+  }
+
+  const texteAlerte =
+    `🛒 *NOUVELLE COMMANDE — ${merchant.nom_commerce}*\n\n` +
+    `Client : ${from}\n` +
+    `Produit : ${detection.produit || 'non précisé'}\n` +
+    `Adresse : ${detection.adresse || 'non précisée'}\n` +
+    `Livraison souhaitée : ${detection.heure_livraison || 'non précisée'}\n\n` +
+    `Pense à confirmer et organiser la livraison.`;
+
+  await sendWhatsAppMessage(merchant.phone_number_id, merchant.numero_proprietaire, texteAlerte);
+  await saveClientProfile(sessionId, { commande_alertee_le: today });
+  console.log(`Alerte commande envoyée pour ${merchant.nom_commerce} (client ${from})`);
 }
 
 // ─── BILAN QUOTIDIEN (MULTI-TENANT) ───────────────────────────────────────────
@@ -599,11 +686,22 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const reply = await askClaude(history, systemPrompt);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
 
-    // Extraction et mise à jour du profil en arrière-plan (non bloquant)
+    // Extraction et mise à jour du profil en arrière-plan (non bloquant —
+    // une info de confort manquée n'a pas de conséquence grave)
     const historyForExtraction = [...history, { role: 'assistant', content: reply }];
     extractAndUpdateProfile(sessionId, historyForExtraction).catch(() => {});
 
     await sendWhatsAppMessage(phoneNumberId, from, reply);
+
+    // Détection de commande confirmée + alerte immédiate au marchand.
+    // Contrairement à l'extraction de profil, on ATTEND ce résultat et on
+    // logue clairement (🚨) en cas d'échec — une commande manquée est une
+    // vente perdue, pas un détail de confort.
+    try {
+      await detecterEtAlerterCommande(sessionId, merchant, from, history, reply);
+    } catch (err) {
+      console.error(`🚨 Erreur alerte commande pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
+    }
   } catch (err) {
     console.error('Erreur traitement webhook Meta:', err.message);
   }
