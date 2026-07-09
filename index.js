@@ -453,13 +453,16 @@ async function askClaudeReporting(transcript) {
 // cas d'échec on logue clairement (🚨) pour pouvoir vérifier manuellement,
 // plutôt que de laisser l'erreur disparaître sans trace.
 
-async function detecterCommande(transcript) {
+async function detecterCommande(transcript, dernierMessageClient) {
   const systemPrompt =
-    "Analyse cet échange WhatsApp entre un client et un vendeur. Détecte si le client vient de CONFIRMER une commande dans les DERNIERS messages : il accepte d'acheter, donne une adresse de livraison, précise un moment de livraison, ou confirme vouloir payer. " +
+    "Analyse cet échange WhatsApp entre un client et un vendeur. Détecte si le client vient de CONFIRMER une commande. " +
+    "RÈGLE STRICTE : la confirmation doit se trouver dans le TOUT DERNIER message du client (fourni séparément ci-dessous), pas ailleurs dans l'historique. " +
+    "Si une commande a déjà été confirmée PLUS TÔT dans la conversation mais que le dernier message du client n'apporte AUCUNE nouvelle confirmation (ex: \"tu es là\", \"bonjour\", une simple question), réponds false, même si l'historique contient une confirmation antérieure. " +
+    "Une confirmation valide dans le dernier message : il accepte d'acheter, donne une adresse de livraison, précise un moment de livraison, ou confirme vouloir payer. " +
     "Une simple demande de prix ou d'information NE COMPTE PAS comme une confirmation. " +
     "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour. " +
-    "Si une commande est confirmée : {\"commande_confirmee\":true,\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque). " +
-    "Si rien n'est confirmé : {\"commande_confirmee\":false}";
+    "Si une commande est confirmée : {\"commande_confirmee\":true,\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque, en te basant sur l'ensemble de la conversation pour ces détails). " +
+    "Si rien n'est confirmé dans le dernier message : {\"commande_confirmee\":false}";
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -474,7 +477,7 @@ async function detecterCommande(transcript) {
         model: 'claude-sonnet-4-6',
         max_tokens: 200,
         system: systemPrompt,
-        messages: [{ role: 'user', content: `Échange :\n${transcript}` }],
+        messages: [{ role: 'user', content: `Historique complet (contexte) :\n${transcript}\n\n---\nTOUT DERNIER MESSAGE DU CLIENT À ANALYSER :\n${dernierMessageClient}` }],
       }),
     });
 
@@ -507,7 +510,9 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
     .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
     .join('\n');
 
-  const detection = await detecterCommande(transcript);
+  const dernierMessageClient = [...history].reverse().find(m => m.role === 'user')?.content || '';
+
+  const detection = await detecterCommande(transcript, dernierMessageClient);
   console.log(`Détection commande — résultat pour ${sessionId} :`, JSON.stringify(detection));
 
   if (!detection.commande_confirmee) return;
