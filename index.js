@@ -637,6 +637,166 @@ cron.schedule('0 18 * * *', () => {
   envoyerBilanQuotidien();
 });
 
+// ─── BILAN HEBDOMADAIRE ────────────────────────────────────────────────────────
+//
+// S'appuie sur la table `commandes`, alimentée automatiquement à chaque
+// alerte de commande confirmée (voir enregistrerCommande). Aucune saisie
+// manuelle nécessaire. Vocabulaire volontairement prudent ("environ",
+// "estimation") car on ne sait pas si chaque commande a été réellement
+// livrée/payée — ce ne sont que des commandes confirmées par le client.
+
+/**
+ * Extrait un nombre à partir d'un texte de prix libre (ex: "50000F" → 50000).
+ * Retourne 0 si aucun chiffre n'est trouvé (ex: "non précisé").
+ */
+function extrairePrixNumerique(prixTexte) {
+  if (!prixTexte) return 0;
+  const chiffres = prixTexte.replace(/[^\d]/g, '');
+  return chiffres ? parseInt(chiffres, 10) : 0;
+}
+
+/**
+ * Récupère les commandes d'un commerçant sur une plage de jours donnée,
+ * en partant d'aujourd'hui. Ex: recupererCommandes(phoneNumberId, 7, 0) =
+ * les 7 derniers jours ; recupererCommandes(phoneNumberId, 14, 7) = les
+ * 7 jours d'avant (pour comparaison semaine sur semaine).
+ */
+async function recupererCommandes(phoneNumberId, joursDebut, joursFin) {
+  const debut = new Date();
+  debut.setHours(0, 0, 0, 0);
+  debut.setDate(debut.getDate() - joursDebut);
+
+  const fin = new Date();
+  fin.setHours(0, 0, 0, 0);
+  fin.setDate(fin.getDate() - joursFin);
+
+  const { data, error } = await supabase
+    .from('commandes')
+    .select('produit, prix_estime, created_at')
+    .eq('phone_number_id', phoneNumberId)
+    .gte('created_at', debut.toISOString())
+    .lt('created_at', fin.toISOString());
+
+  if (error) {
+    console.error(`Erreur récupération commandes pour ${phoneNumberId}:`, error.message);
+    return [];
+  }
+  return data || [];
+}
+
+/**
+ * Calcule les statistiques brutes d'une liste de commandes : nombre total,
+ * chiffre d'affaires estimé (somme des prix numériques trouvés), et produit
+ * le plus fréquent.
+ */
+function calculerStats(commandes) {
+  const nombre = commandes.length;
+  const chiffreAffaires = commandes.reduce((total, c) => total + extrairePrixNumerique(c.prix_estime), 0);
+
+  const compteurProduits = {};
+  for (const c of commandes) {
+    const nom = c.produit || 'non précisé';
+    compteurProduits[nom] = (compteurProduits[nom] || 0) + 1;
+  }
+  let produitTop = null;
+  let maxCount = 0;
+  for (const [nom, count] of Object.entries(compteurProduits)) {
+    if (count > maxCount) {
+      maxCount = count;
+      produitTop = nom;
+    }
+  }
+
+  return { nombre, chiffreAffaires, produitTop };
+}
+
+/**
+ * Demande à Claude de reformuler les statistiques en un message WhatsApp
+ * naturel et prudent (jamais de chiffre présenté comme certain).
+ */
+async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemainePrecedente) {
+  const systemPrompt =
+    "Tu es l'assistant de gestion d'un commerçant ivoirien. Rédige un bilan HEBDOMADAIRE en français, chaleureux et simple, en 4-5 phrases maximum. " +
+    "IMPORTANT : ces chiffres viennent de commandes CONFIRMÉES par les clients via WhatsApp, mais on ne sait pas si elles ont toutes été réellement livrées et payées. " +
+    "Utilise TOUJOURS un vocabulaire prudent : \"environ\", \"à peu près\", \"estimation\", jamais de chiffre présenté comme certain ou définitif. " +
+    "Compare à la semaine précédente (en hausse / en baisse / stable) si les deux chiffres sont disponibles. " +
+    "Mentionne le produit le plus demandé de la semaine." +
+    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+
+  const contenu = `Commerce : ${nomCommerce}
+Cette semaine : environ ${statsSemaine.nombre} commande(s) confirmée(s), chiffre d'affaires estimé à environ ${statsSemaine.chiffreAffaires} FCFA, produit le plus demandé : ${statsSemaine.produitTop || 'aucun'}.
+Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chiffre d'affaires estimé à environ ${statsSemainePrecedente.chiffreAffaires} FCFA.`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: contenu }],
+    }),
+  });
+
+  if (!response.ok) throw new Error('Erreur API Reporting hebdomadaire');
+  const data = await response.json();
+  return data.content[0].text;
+}
+
+/**
+ * Boucle sur chaque commerçant actif, calcule ses statistiques de la semaine
+ * (et de la semaine précédente pour comparaison), et envoie le bilan
+ * hebdomadaire à son numero_proprietaire.
+ */
+async function envoyerBilanHebdomadaire() {
+  console.log('--- Déclenchement du bilan hebdomadaire ---');
+
+  const merchants = await getMerchantsActifs();
+  if (merchants.length === 0) {
+    console.log('Aucun commerçant actif trouvé.');
+    return;
+  }
+
+  for (const merchant of merchants) {
+    const { phone_number_id, nom_commerce, numero_proprietaire } = merchant;
+
+    if (!numero_proprietaire) {
+      console.log(`Bilan hebdo ignoré pour ${nom_commerce} : numero_proprietaire manquant.`);
+      continue;
+    }
+
+    try {
+      const [commandesSemaine, commandesSemainePrecedente] = await Promise.all([
+        recupererCommandes(phone_number_id, 7, 0),
+        recupererCommandes(phone_number_id, 14, 7),
+      ]);
+
+      if (commandesSemaine.length === 0) {
+        console.log(`Aucune commande cette semaine pour ${nom_commerce}. Pas de bilan hebdo envoyé.`);
+        continue;
+      }
+
+      const statsSemaine = calculerStats(commandesSemaine);
+      const statsSemainePrecedente = calculerStats(commandesSemainePrecedente);
+
+      const bilan = await formulerBilanHebdomadaire(nom_commerce, statsSemaine, statsSemainePrecedente);
+
+      await sendWhatsAppMessage(phone_number_id, numero_proprietaire, `📈 *BILAN DE LA SEMAINE — ${nom_commerce}*\n\n${bilan}`);
+      console.log(`Bilan hebdomadaire envoyé avec succès pour ${nom_commerce} !`);
+    } catch (err) {
+      console.error(`Erreur bilan hebdomadaire pour ${nom_commerce} :`, err.message);
+    }
+  }
+}
+
+cron.schedule('0 20 * * 0', () => {
+  envoyerBilanHebdomadaire();
+});
+
 // ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
 
 // Fallback utilisé uniquement si un commerçant n'a pas encore de system_prompt
@@ -676,8 +836,20 @@ app.get('/trigger-report', async (req, res) => {
   if (!CRON_SECRET || secretFourni !== CRON_SECRET) {
     return res.status(403).json({ error: 'Accès refusé' });
   }
+  // Réponse volontairement courte pour cron-job.org (qui rejette les réponses
+  // trop volumineuses) — le détail complet par commerçant reste dans les logs
+  // Render, consultable manuellement si besoin de vérifier.
   const resultat = await envoyerBilanQuotidien();
-  res.json(resultat);
+  res.json({ ok: true });
+});
+
+app.get('/trigger-weekly-report', async (req, res) => {
+  const secretFourni = req.query.secret || req.headers['x-cron-secret'];
+  if (!CRON_SECRET || secretFourni !== CRON_SECRET) {
+    return res.status(403).json({ error: 'Accès refusé' });
+  }
+  await envoyerBilanHebdomadaire();
+  res.json({ ok: true });
 });
 
 // Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
