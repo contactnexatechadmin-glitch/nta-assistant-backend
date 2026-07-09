@@ -39,9 +39,10 @@ const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
 const REGLE_CONFIRMATION_COMMANDE =
-  "\n\nIMPORTANT - Confirmation de commande : quand un client a fini de préciser ce qu'il veut acheter (produit, adresse, heure de livraison), fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement, jamais remplacé par une autre question comme \"avez-vous besoin d'autre chose ?\"). " +
-  "N'enchaîne jamais directement sur une nouvelle question sans être passé par cette confirmation. " +
-  "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément — ne jamais regrouper plusieurs commandes passées à des moments différents comme si elles étaient une seule et même commande.";
+  "\n\nIMPORTANT - Confirmation de commande : quand un client a fini de préciser ce qu'il veut acheter (produit, adresse, heure de livraison), fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
+  "Si le client répond ensuite positivement à cette question (oui, je confirme, d'accord, etc.) SANS apporter de correction ou changement au récapitulatif, commence OBLIGATOIREMENT ta réponse par exactement la phrase \"Commande confirmée !\" avant d'ajouter quoi que ce soit d'autre (même si le client enchaîne avec une autre question dans le même message). " +
+  "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas répondu positivement à la question de confirmation, ou s'il est en train de corriger/modifier sa commande. " +
+  "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -458,17 +459,19 @@ async function askClaudeReporting(transcript) {
 // cas d'échec on logue clairement (🚨) pour pouvoir vérifier manuellement,
 // plutôt que de laisser l'erreur disparaître sans trace.
 
-async function detecterCommande(transcript, dernierMessageClient, derniereReponseBot, questionPrecedenteBot) {
+/**
+ * Extrait les détails d'une commande (produit, prix, adresse, heure de
+ * livraison) à partir de la conversation. Appelée UNIQUEMENT quand le code a
+ * déjà vérifié que la réponse du bot contient la phrase verrouillée
+ * "Commande confirmée !" — plus besoin de faire juger la confirmation par
+ * l'IA, seulement d'en extraire les détails.
+ */
+async function extraireDetailsCommande(transcript) {
   const systemPrompt =
-    "Analyse cet échange WhatsApp entre un client et un vendeur. Détecte si le client vient de CONFIRMER une commande. " +
-    "RÈGLE STRICTE N°1 : la confirmation doit se trouver dans le TOUT DERNIER message du client (fourni séparément ci-dessous), pas ailleurs dans l'historique. " +
-    "Si une commande a déjà été confirmée PLUS TÔT dans la conversation mais que le dernier message du client n'apporte AUCUNE nouvelle confirmation (ex: \"tu es là\", \"bonjour\", une simple question), réponds false, même si l'historique contient une confirmation antérieure. " +
-    "RÈGLE STRICTE N°2 : le bot est configuré pour toujours terminer un récapitulatif de commande par exactement la question \"Vous confirmez cette commande ?\" (fournie séparément ci-dessous, sous QUESTION PRÉCÉDENTE DU BOT). Une commande n'est confirmée QUE si cette question précise a bien été posée par le bot juste avant, ET que le client vient d'y répondre positivement (oui, je confirme, d'accord, etc.). Si cette question exacte n'a pas été posée juste avant le dernier message du client, la commande N'EST PAS finalisée : réponds false, même si le client semble avoir donné des informations. " +
-    "Une confirmation valide dans le dernier message : il accepte d'acheter, donne une adresse de livraison, précise un moment de livraison, ou confirme vouloir payer — ET le bot n'attend plus aucune précision supplémentaire. " +
-    "Une simple demande de prix ou d'information NE COMPTE PAS comme une confirmation. " +
-    "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour. " +
-    "Si une commande est confirmée : {\"commande_confirmee\":true,\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque, en te basant sur l'ensemble de la conversation pour ces détails). " +
-    "Si rien n'est confirmé dans le dernier message, ou si le bot attend encore une précision : {\"commande_confirmee\":false}";
+    "Analyse cet échange WhatsApp entre un client et un vendeur. Une commande vient d'être confirmée. " +
+    "Extrait les détails de CETTE commande précise (la plus récente, celle qui vient d'être confirmée — pas une commande plus ancienne mentionnée plus tôt dans la conversation). " +
+    "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour : " +
+    "{\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque).";
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -483,40 +486,38 @@ async function detecterCommande(transcript, dernierMessageClient, derniereRepons
         model: 'claude-sonnet-4-6',
         max_tokens: 200,
         system: systemPrompt,
-        messages: [{ role: 'user', content: `Historique complet (contexte) :\n${transcript}\n\n---\nTOUT DERNIER MESSAGE DU CLIENT À ANALYSER :\n${dernierMessageClient}\n\n---\nQUESTION PRÉCÉDENTE DU BOT (juste avant ce message client) :\n${questionPrecedenteBot}\n\n---\nDERNIÈRE RÉPONSE DU BOT (juste envoyée après) :\n${derniereReponseBot}` }],
+        messages: [{ role: 'user', content: `Échange :\n${transcript}` }],
       }),
     });
 
     if (!response.ok) {
-      console.error('🚨 Détection commande — API Claude a répondu', response.status);
-      return { commande_confirmee: false };
+      console.error('🚨 Extraction détails commande — API Claude a répondu', response.status);
+      return { produit: 'non précisé', prix: 'non précisé', adresse: 'non précisé', heure_livraison: 'non précisé' };
     }
 
     const data = await response.json();
     const raw = nettoyerJSON(data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim());
     return JSON.parse(raw);
   } catch (err) {
-    console.error('🚨 Détection commande échouée (vérifier manuellement) :', err.message);
-    return { commande_confirmee: false };
+    console.error('🚨 Extraction détails commande échouée (vérifier manuellement) :', err.message);
+    return { produit: 'non précisé', prix: 'non précisé', adresse: 'non précisé', heure_livraison: 'non précisé' };
   }
 }
 
 /**
  * Envoie une alerte WhatsApp immédiate au propriétaire dès qu'une commande est
- * confirmée par un client. On compare le détail de la commande (produit +
- * adresse + heure de livraison) à la dernière commande déjà alertée pour ce
- * client (stockée dans client_profiles) : si c'est exactement la même, pas de
- * nouvelle alerte. Si un détail diffère — même le même jour — c'est une
- * nouvelle commande, donc une nouvelle alerte.
+ * confirmée par un client. La confirmation n'est plus jugée par l'IA : le bot
+ * est configuré pour écrire exactement "Commande confirmée !" au début de sa
+ * réponse quand (et seulement quand) le client vient de confirmer — le code
+ * n'a qu'à vérifier la présence de cette phrase verrouillée, ce qui élimine
+ * les faux positifs/négatifs liés à l'interprétation.
+ * On compare ensuite le détail de la commande (produit + adresse + heure) à
+ * la dernière commande déjà alertée pour ce client, pour éviter un doublon si
+ * le bot répète "Commande confirmée !" plusieurs fois pour la même commande.
  */
 async function detecterEtAlerterCommande(sessionId, merchant, from, history, reply) {
-  // Si le bot pose encore une question dans sa réponse (couleur, taille,
-  // quantité, adresse, heure...), la commande n'est pas encore figée — on ne
-  // tente même pas la détection, pour éviter une alerte prématurée qui
-  // provoquerait ensuite un doublon une fois la clarification résolue.
-  if (reply.includes('?')) {
-    console.log(`Détection commande — ${sessionId} : le bot pose encore une question, commande non figée, on ignore.`);
-    return;
+  if (!reply.includes('Commande confirmée')) {
+    return; // Pas de confirmation explicite dans cette réponse — rien à faire
   }
 
   const profile = await getClientProfile(sessionId);
@@ -525,21 +526,8 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
     .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
     .join('\n');
 
-  const dernierMessageClient = [...history].reverse().find(m => m.role === 'user')?.content || '';
-
-  // Le message du bot qui a précédé cette dernière réponse du client — sert à
-  // vérifier que la question verrouillée "Vous confirmez cette commande ?"
-  // a bien été posée juste avant, et pas ailleurs plus tôt dans l'historique.
-  const indexDernierMessageClient = [...history].reverse().findIndex(m => m.role === 'user');
-  const historyAvantDernierMessage = indexDernierMessageClient >= 0
-    ? [...history].reverse().slice(indexDernierMessageClient + 1)
-    : [];
-  const questionPrecedenteBot = historyAvantDernierMessage.find(m => m.role === 'assistant')?.content || '';
-
-  const detection = await detecterCommande(transcript, dernierMessageClient, reply, questionPrecedenteBot);
-  console.log(`Détection commande — résultat pour ${sessionId} :`, JSON.stringify(detection));
-
-  if (!detection.commande_confirmee) return;
+  const detection = await extraireDetailsCommande(transcript);
+  console.log(`Commande confirmée détectée pour ${sessionId} — détails :`, JSON.stringify(detection));
 
   // On compare au détail exact de la dernière commande déjà alertée pour ce
   // client (pas juste "aujourd'hui") : si le client répète sa confirmation
