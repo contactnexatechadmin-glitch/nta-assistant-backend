@@ -458,7 +458,7 @@ async function detecterCommande(transcript) {
     "Analyse cet échange WhatsApp entre un client et un vendeur. Détecte si le client vient de CONFIRMER une commande dans les DERNIERS messages : il accepte d'acheter, donne une adresse de livraison, précise un moment de livraison, ou confirme vouloir payer. " +
     "Une simple demande de prix ou d'information NE COMPTE PAS comme une confirmation. " +
     "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour. " +
-    "Si une commande est confirmée : {\"commande_confirmee\":true,\"produit\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque). " +
+    "Si une commande est confirmée : {\"commande_confirmee\":true,\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque). " +
     "Si rien n'est confirmé : {\"commande_confirmee\":false}";
 
   try {
@@ -534,13 +534,36 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
     `🛒 *NOUVELLE COMMANDE — ${merchant.nom_commerce}*\n\n` +
     `Client : ${from}\n` +
     `Produit : ${detection.produit || 'non précisé'}\n` +
+    `Prix : ${detection.prix || 'non précisé'}\n` +
     `Adresse : ${detection.adresse || 'non précisée'}\n` +
     `Livraison souhaitée : ${detection.heure_livraison || 'non précisée'}\n\n` +
     `Pense à confirmer et organiser la livraison.`;
 
   await sendWhatsAppMessage(merchant.phone_number_id, merchant.numero_proprietaire, texteAlerte);
   await saveClientProfile(sessionId, { derniere_commande_alertee: signatureNouvelle });
+  await enregistrerCommande(merchant, from, detection);
   console.log(`Alerte commande envoyée pour ${merchant.nom_commerce} (client ${from})`);
+}
+
+/**
+ * Enregistre chaque commande détectée dans la table `commandes`, pour servir
+ * de base au bilan hebdomadaire. Aucune saisie manuelle : ça s'exécute
+ * automatiquement, au même moment que l'alerte envoyée au marchand.
+ */
+async function enregistrerCommande(merchant, from, detection) {
+  const { error } = await supabase.from('commandes').insert([{
+    phone_number_id: merchant.phone_number_id,
+    numero_client: from,
+    produit: detection.produit || null,
+    prix_estime: detection.prix || null,
+    adresse_livraison: detection.adresse || null,
+    heure_livraison_souhaitee: detection.heure_livraison || null,
+    nom_commerce: merchant.nom_commerce,
+  }]);
+
+  if (error) {
+    console.error(`🚨 Erreur enregistrement commande dans Supabase pour ${merchant.nom_commerce} :`, error.message);
+  }
 }
 
 // ─── BILAN QUOTIDIEN (MULTI-TENANT) ───────────────────────────────────────────
