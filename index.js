@@ -494,25 +494,36 @@ async function detecterCommande(transcript) {
 
 /**
  * Envoie une alerte WhatsApp immédiate au propriétaire dès qu'une commande est
- * confirmée par un client. Une seule alerte par client et par jour (le flag
- * commande_alertee_le est stocké dans client_profiles et remis à zéro chaque
- * jour, pour permettre une nouvelle alerte si le même client commande à
- * nouveau le lendemain).
+ * confirmée par un client. On compare le détail de la commande (produit +
+ * adresse + heure de livraison) à la dernière commande déjà alertée pour ce
+ * client (stockée dans client_profiles) : si c'est exactement la même, pas de
+ * nouvelle alerte. Si un détail diffère — même le même jour — c'est une
+ * nouvelle commande, donc une nouvelle alerte.
  */
 async function detecterEtAlerterCommande(sessionId, merchant, from, history, reply) {
-  const today = new Date().toISOString().slice(0, 10);
-
   const profile = await getClientProfile(sessionId);
-  if (profile?.commande_alertee_le === today) {
-    return; // Déjà alerté aujourd'hui pour ce client — on ne spamme pas le marchand
-  }
 
   const transcript = [...history, { role: 'assistant', content: reply }]
     .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
     .join('\n');
 
   const detection = await detecterCommande(transcript);
+  console.log(`Détection commande — résultat pour ${sessionId} :`, JSON.stringify(detection));
+
   if (!detection.commande_confirmee) return;
+
+  // On compare au détail exact de la dernière commande déjà alertée pour ce
+  // client (pas juste "aujourd'hui") : si le client répète sa confirmation
+  // dans la même conversation, on n'alerte pas deux fois pour LA MÊME commande.
+  // Mais si les détails diffèrent (même le même jour), c'est une nouvelle
+  // commande — le client peut très bien commander plusieurs fois par jour.
+  const signatureNouvelle = `${detection.produit || ''}|${detection.adresse || ''}|${detection.heure_livraison || ''}`;
+  const signaturePrecedente = profile?.derniere_commande_alertee || '';
+
+  if (signatureNouvelle === signaturePrecedente) {
+    console.log(`Détection commande — ${sessionId} : commande identique déjà alertée, on ignore.`);
+    return;
+  }
 
   if (!merchant.numero_proprietaire) {
     console.error(`🚨 Commande confirmée pour ${merchant.nom_commerce} mais numero_proprietaire manquant — alerte impossible, vérifier Supabase`);
@@ -528,7 +539,7 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
     `Pense à confirmer et organiser la livraison.`;
 
   await sendWhatsAppMessage(merchant.phone_number_id, merchant.numero_proprietaire, texteAlerte);
-  await saveClientProfile(sessionId, { commande_alertee_le: today });
+  await saveClientProfile(sessionId, { derniere_commande_alertee: signatureNouvelle });
   console.log(`Alerte commande envoyée pour ${merchant.nom_commerce} (client ${from})`);
 }
 
