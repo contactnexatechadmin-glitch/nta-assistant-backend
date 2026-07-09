@@ -18,7 +18,6 @@ app.use(cors());
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const NUMERO_PATRON = process.env.NUMERO_PATRON;
 const CRON_SECRET = process.env.CRON_SECRET;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
@@ -226,18 +225,25 @@ async function getHistoryFromSupabase(sessionId) {
   return (data || []).reverse();
 }
 
-async function getTodayMessages() {
+/**
+ * Récupère les messages du jour pour UN SEUL commerçant.
+ * Le session_id est toujours construit comme "phoneNumberId:numeroClient",
+ * donc on filtre avec un LIKE sur ce préfixe pour isoler ses conversations
+ * de celles des autres commerçants.
+ */
+async function getTodayMessagesForMerchant(phoneNumberId) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const { data, error } = await supabase
     .from('conversations')
     .select('session_id, role, content')
+    .like('session_id', `${phoneNumberId}:%`)
     .gte('created_at', today.toISOString())
     .order('created_at', { ascending: true });
 
   if (error) {
-    console.error('Erreur récupération messages du jour:', error.message);
+    console.error(`Erreur récupération messages du jour pour ${phoneNumberId}:`, error.message);
     return [];
   }
   return data || [];
@@ -258,7 +264,8 @@ async function saveMessageToSupabase(sessionId, role, content) {
 // Un seul webhook Meta reçoit les messages de TOUS les commerçants. Chaque
 // message entrant contient l'ID du numéro qui l'a reçu (value.metadata.phone_
 // number_id) — c'est cet ID qui permet de savoir quel commerçant est concerné,
-// et donc quel system_prompt utiliser. Table Supabase : `merchants`.
+// et donc quel system_prompt utiliser. Table Supabase : `merchants`, qui est
+// désormais la source unique de vérité (config technique + infos commerciales).
 
 async function getMerchant(phoneNumberId) {
   const { data, error } = await supabase
@@ -274,21 +281,43 @@ async function getMerchant(phoneNumberId) {
   return data;
 }
 
-// ─── ACCÈS ────────────────────────────────────────────────────────────────────
-
-async function estSuspendu(whatsappNumber) {
+/**
+ * Récupère tous les commerçants actifs, pour le bilan quotidien multi-tenant.
+ */
+async function getMerchantsActifs() {
   const { data, error } = await supabase
-    .from('clients')
-    .select('suspended')
-    .eq('whatsapp_number', whatsappNumber)
+    .from('merchants')
+    .select('phone_number_id, nom_commerce, numero_proprietaire, actif')
+    .eq('actif', true);
+
+  if (error) {
+    console.error('Erreur récupération commerçants actifs:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+// ─── ACCÈS ────────────────────────────────────────────────────────────────────
+//
+// Le statut de suspension vit désormais dans merchants.suspendu (table `clients`
+// abandonnée). Le sessionId étant construit "phoneNumberId:numeroClient", on
+// extrait le phoneNumberId pour retrouver le bon commerçant.
+
+async function estSuspendu(sessionId) {
+  const phoneNumberId = sessionId.split(':')[0];
+
+  const { data, error } = await supabase
+    .from('merchants')
+    .select('suspendu')
+    .eq('phone_number_id', phoneNumberId)
     .maybeSingle();
 
   if (error) {
-    console.error('Erreur lecture statut Supabase:', error.message);
+    console.error('Erreur lecture statut suspendu Supabase:', error.message);
     return false;
   }
   if (!data) return false;
-  return data.suspended === true;
+  return data.suspendu === true;
 }
 
 // ─── SÉCURITÉ WEBHOOK META ─────────────────────────────────────────────────────
@@ -406,36 +435,56 @@ async function askClaudeReporting(transcript) {
   return data.content[0].text;
 }
 
-// ─── BILAN QUOTIDIEN ──────────────────────────────────────────────────────────
+// ─── BILAN QUOTIDIEN (MULTI-TENANT) ───────────────────────────────────────────
+//
+// Boucle sur chaque commerçant actif, génère un bilan séparé à partir de SES
+// SEULES conversations du jour, et l'envoie sur SON numéro de propriétaire —
+// depuis son propre phone_number_id (pas celui de NTA).
 
 async function envoyerBilanQuotidien() {
-  console.log('--- Déclenchement du bilan ---');
-  if (!NUMERO_PATRON || !META_PHONE_NUMBER_ID) {
-    console.log('Annulé : NUMERO_PATRON ou META_PHONE_NUMBER_ID manquant.');
-    return { envoye: false, raison: 'Configuration manquante' };
+  console.log('--- Déclenchement du bilan multi-tenant ---');
+
+  const merchants = await getMerchantsActifs();
+  if (merchants.length === 0) {
+    console.log('Aucun commerçant actif trouvé.');
+    return { envoye: false, raison: 'Aucun commerçant actif' };
   }
-  try {
-    const messagesJour = await getTodayMessages();
-    if (messagesJour.length === 0) {
-      console.log("Aucun message aujourd'hui. Pas de bilan envoyé.");
-      return { envoye: false, raison: "Aucun message aujourd'hui" };
+
+  const resultats = [];
+
+  for (const merchant of merchants) {
+    const { phone_number_id, nom_commerce, numero_proprietaire } = merchant;
+
+    if (!numero_proprietaire) {
+      console.log(`Bilan ignoré pour ${nom_commerce} : numero_proprietaire manquant.`);
+      resultats.push({ commerce: nom_commerce, envoye: false, raison: 'numero_proprietaire manquant' });
+      continue;
     }
 
-    const transcript = messagesJour
-      .map((m) => `${m.role === 'user' ? 'Client ' + m.session_id : 'Bot'} : ${m.content}`)
-      .join('\n');
-    const bilan = await askClaudeReporting(transcript);
+    try {
+      const messagesJour = await getTodayMessagesForMerchant(phone_number_id);
 
-    // NOTE : bilan encore global (tous commerçants confondus), envoyé depuis le
-    // numéro principal. À faire évoluer en bilan par commerçant quand il y aura
-    // plusieurs clients payants actifs.
-    await sendWhatsAppMessage(META_PHONE_NUMBER_ID, NUMERO_PATRON, `📊 *BILAN DE LA JOURNÉE*\n\n${bilan}`);
-    console.log('Bilan envoyé avec succès sur WhatsApp !');
-    return { envoye: true };
-  } catch (err) {
-    console.error("Erreur lors de l'envoi du bilan :", err.message);
-    return { envoye: false, raison: err.message };
+      if (messagesJour.length === 0) {
+        console.log(`Aucun message aujourd'hui pour ${nom_commerce}. Pas de bilan envoyé.`);
+        resultats.push({ commerce: nom_commerce, envoye: false, raison: "Aucun message aujourd'hui" });
+        continue;
+      }
+
+      const transcript = messagesJour
+        .map((m) => `${m.role === 'user' ? 'Client ' + m.session_id : 'Bot'} : ${m.content}`)
+        .join('\n');
+      const bilan = await askClaudeReporting(transcript);
+
+      await sendWhatsAppMessage(phone_number_id, numero_proprietaire, `📊 *BILAN DE LA JOURNÉE — ${nom_commerce}*\n\n${bilan}`);
+      console.log(`Bilan envoyé avec succès pour ${nom_commerce} !`);
+      resultats.push({ commerce: nom_commerce, envoye: true });
+    } catch (err) {
+      console.error(`Erreur bilan pour ${nom_commerce} :`, err.message);
+      resultats.push({ commerce: nom_commerce, envoye: false, raison: err.message });
+    }
   }
+
+  return { envoye: true, details: resultats };
 }
 
 cron.schedule('0 18 * * *', () => {
