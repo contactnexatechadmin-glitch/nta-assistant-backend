@@ -668,9 +668,13 @@ async function recupererCommandes(phoneNumberId, joursDebut, joursFin) {
   debut.setHours(0, 0, 0, 0);
   debut.setDate(debut.getDate() - joursDebut);
 
+  // Si joursFin est 0 (semaine en cours), la borne de fin doit être MAINTENANT
+  // (pas minuit aujourd'hui), sinon les commandes du jour même sont exclues.
   const fin = new Date();
-  fin.setHours(0, 0, 0, 0);
-  fin.setDate(fin.getDate() - joursFin);
+  if (joursFin > 0) {
+    fin.setHours(0, 0, 0, 0);
+    fin.setDate(fin.getDate() - joursFin);
+  }
 
   const { data, error } = await supabase
     .from('commandes')
@@ -773,8 +777,8 @@ async function envoyerBilanHebdomadaire() {
 
     try {
       const [commandesSemaine, commandesSemainePrecedente] = await Promise.all([
-        recupererCommandes(phone_number_id, 7, 0),
-        recupererCommandes(phone_number_id, 14, 7),
+        recupererCommandes(phone_number_id, 6, 0),
+        recupererCommandes(phone_number_id, 13, 6),
       ]);
 
       if (commandesSemaine.length === 0) {
