@@ -38,6 +38,11 @@ const REGLE_FORMATAGE_WHATSAPP =
 const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
+const REGLE_CONFIRMATION_COMMANDE =
+  "\n\nIMPORTANT - Confirmation de commande : quand un client a fini de préciser ce qu'il veut acheter (produit, adresse, heure de livraison), fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement, jamais remplacé par une autre question comme \"avez-vous besoin d'autre chose ?\"). " +
+  "N'enchaîne jamais directement sur une nouvelle question sans être passé par cette confirmation. " +
+  "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément — ne jamais regrouper plusieurs commandes passées à des moments différents comme si elles étaient une seule et même commande.";
+
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
 // Depuis le 31 janvier 2021, la Côte d'Ivoire est passée de 8 à 10 chiffres.
@@ -453,12 +458,12 @@ async function askClaudeReporting(transcript) {
 // cas d'échec on logue clairement (🚨) pour pouvoir vérifier manuellement,
 // plutôt que de laisser l'erreur disparaître sans trace.
 
-async function detecterCommande(transcript, dernierMessageClient, derniereReponseBot) {
+async function detecterCommande(transcript, dernierMessageClient, derniereReponseBot, questionPrecedenteBot) {
   const systemPrompt =
     "Analyse cet échange WhatsApp entre un client et un vendeur. Détecte si le client vient de CONFIRMER une commande. " +
     "RÈGLE STRICTE N°1 : la confirmation doit se trouver dans le TOUT DERNIER message du client (fourni séparément ci-dessous), pas ailleurs dans l'historique. " +
     "Si une commande a déjà été confirmée PLUS TÔT dans la conversation mais que le dernier message du client n'apporte AUCUNE nouvelle confirmation (ex: \"tu es là\", \"bonjour\", une simple question), réponds false, même si l'historique contient une confirmation antérieure. " +
-    "RÈGLE STRICTE N°2 : regarde aussi la DERNIÈRE RÉPONSE DU BOT (fournie séparément ci-dessous). Si cette réponse pose ENCORE une question de clarification (ex: demande de préciser la couleur, la taille, la quantité, l'adresse exacte), alors la commande N'EST PAS encore finalisée : réponds false, même si le client vient de donner des informations, tant que le bot n'a pas répondu par une confirmation finale sans nouvelle question. " +
+    "RÈGLE STRICTE N°2 : le bot est configuré pour toujours terminer un récapitulatif de commande par exactement la question \"Vous confirmez cette commande ?\" (fournie séparément ci-dessous, sous QUESTION PRÉCÉDENTE DU BOT). Une commande n'est confirmée QUE si cette question précise a bien été posée par le bot juste avant, ET que le client vient d'y répondre positivement (oui, je confirme, d'accord, etc.). Si cette question exacte n'a pas été posée juste avant le dernier message du client, la commande N'EST PAS finalisée : réponds false, même si le client semble avoir donné des informations. " +
     "Une confirmation valide dans le dernier message : il accepte d'acheter, donne une adresse de livraison, précise un moment de livraison, ou confirme vouloir payer — ET le bot n'attend plus aucune précision supplémentaire. " +
     "Une simple demande de prix ou d'information NE COMPTE PAS comme une confirmation. " +
     "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour. " +
@@ -478,7 +483,7 @@ async function detecterCommande(transcript, dernierMessageClient, derniereRepons
         model: 'claude-sonnet-4-6',
         max_tokens: 200,
         system: systemPrompt,
-        messages: [{ role: 'user', content: `Historique complet (contexte) :\n${transcript}\n\n---\nTOUT DERNIER MESSAGE DU CLIENT À ANALYSER :\n${dernierMessageClient}\n\n---\nDERNIÈRE RÉPONSE DU BOT (juste envoyée) :\n${derniereReponseBot}` }],
+        messages: [{ role: 'user', content: `Historique complet (contexte) :\n${transcript}\n\n---\nTOUT DERNIER MESSAGE DU CLIENT À ANALYSER :\n${dernierMessageClient}\n\n---\nQUESTION PRÉCÉDENTE DU BOT (juste avant ce message client) :\n${questionPrecedenteBot}\n\n---\nDERNIÈRE RÉPONSE DU BOT (juste envoyée après) :\n${derniereReponseBot}` }],
       }),
     });
 
@@ -522,7 +527,16 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
 
   const dernierMessageClient = [...history].reverse().find(m => m.role === 'user')?.content || '';
 
-  const detection = await detecterCommande(transcript, dernierMessageClient, reply);
+  // Le message du bot qui a précédé cette dernière réponse du client — sert à
+  // vérifier que la question verrouillée "Vous confirmez cette commande ?"
+  // a bien été posée juste avant, et pas ailleurs plus tôt dans l'historique.
+  const indexDernierMessageClient = [...history].reverse().findIndex(m => m.role === 'user');
+  const historyAvantDernierMessage = indexDernierMessageClient >= 0
+    ? [...history].reverse().slice(indexDernierMessageClient + 1)
+    : [];
+  const questionPrecedenteBot = historyAvantDernierMessage.find(m => m.role === 'assistant')?.content || '';
+
+  const detection = await detecterCommande(transcript, dernierMessageClient, reply, questionPrecedenteBot);
   console.log(`Détection commande — résultat pour ${sessionId} :`, JSON.stringify(detection));
 
   if (!detection.commande_confirmee) return;
@@ -911,7 +925,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     // si jamais system_prompt est vide dans Supabase)
     const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
     const profileLine = formatProfileForPrompt(profile);
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + profileLine;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + profileLine;
 
     // Réponse principale
     const reply = await askClaude(history, systemPrompt);
