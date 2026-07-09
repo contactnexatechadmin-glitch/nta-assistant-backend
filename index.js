@@ -95,6 +95,16 @@ function versFormatMeta(numero) {
   return numero.replace('whatsapp:', '').replace('+', '');
 }
 
+/**
+ * Claude entoure parfois sa réponse JSON de balises markdown (```json ... ```).
+ * Cette fonction retire ces balises avant parsing, pour éviter des échecs
+ * silencieux de JSON.parse() sur du texte par ailleurs valide.
+ */
+function nettoyerJSON(raw) {
+  if (!raw) return raw;
+  return raw.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+}
+
 // ─── PROFIL CLIENT ────────────────────────────────────────────────────────────
 
 /**
@@ -193,7 +203,7 @@ ${transcript}`;
     if (!response.ok) return;
 
     const data = await response.json();
-    const raw = data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    const raw = nettoyerJSON(data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim());
 
     if (!raw || raw === '{}') return;
 
@@ -474,7 +484,7 @@ async function detecterCommande(transcript) {
     }
 
     const data = await response.json();
-    const raw = data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    const raw = nettoyerJSON(data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim());
     return JSON.parse(raw);
   } catch (err) {
     console.error('🚨 Détection commande échouée (vérifier manuellement) :', err.message);
