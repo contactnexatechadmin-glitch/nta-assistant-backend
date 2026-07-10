@@ -858,6 +858,65 @@ app.get('/trigger-weekly-report', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── ROUTES DASHBOARD (GESTION DES COMMERÇANTS) ───────────────────────────────
+//
+// Utilisées par le tableau de bord HTML. `phone_number_id` sert de clé (fiable,
+// jamais mal saisi, contrairement à un numéro de téléphone). Le champ
+// `suspendu` contrôle l'accès réel du bot (coupure pour non-paiement) — dès
+// qu'il passe à true, le webhook cesse de répondre au client final concerné.
+
+app.get('/merchants', async (req, res) => {
+  const { data, error } = await supabase.from('merchants').select('*');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ merchants: data || [] });
+});
+
+app.post('/merchants', async (req, res) => {
+  const {
+    phone_number_id, nom_commerce, system_prompt,
+    numero_proprietaire, prix, secteur, essai, date_debut,
+  } = req.body;
+
+  if (!phone_number_id || !nom_commerce || !numero_proprietaire) {
+    return res.status(400).json({ error: 'phone_number_id, nom_commerce et numero_proprietaire sont requis' });
+  }
+
+  const { data, error } = await supabase.from('merchants').insert([{
+    phone_number_id,
+    nom_commerce,
+    system_prompt: system_prompt || null,
+    actif: true,
+    suspendu: false,
+    numero_proprietaire,
+    prix: prix || 29000,
+    secteur: secteur || null,
+    essai: essai !== undefined ? essai : true,
+    date_debut: date_debut || new Date().toISOString(),
+  }]).select();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ merchant: data[0] });
+});
+
+app.patch('/merchants/:phone_number_id', async (req, res) => {
+  const { phone_number_id } = req.params;
+  const { data, error } = await supabase
+    .from('merchants')
+    .update(req.body)
+    .eq('phone_number_id', phone_number_id)
+    .select();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ merchant: data[0] });
+});
+
+app.delete('/merchants/:phone_number_id', async (req, res) => {
+  const { phone_number_id } = req.params;
+  const { error } = await supabase.from('merchants').delete().eq('phone_number_id', phone_number_id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 // Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
 app.post('/webhook', verifierSignatureMeta, async (req, res) => {
   // Meta attend une réponse 200 très rapide, sinon il considère l'envoi en échec
