@@ -437,6 +437,7 @@ async function askClaudeReporting(transcript) {
       'content-type': 'application/json',
       'x-api-key': ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01',
+      'accept-encoding': 'identity',
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
@@ -739,6 +740,7 @@ Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chi
       'content-type': 'application/json',
       'x-api-key': ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01',
+      'accept-encoding': 'identity',
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
