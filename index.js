@@ -45,6 +45,17 @@ const REGLE_CONFIRMATION_COMMANDE =
   "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
+//
+// Depuis le 31 janvier 2021, la Côte d'Ivoire est passée de 8 à 10 chiffres.
+// Selon l'opérateur d'origine, il faut ajouter un préfixe fixe devant l'ancien
+// numéro à 8 chiffres pour obtenir le nouveau numéro à 10 chiffres :
+//   - Moov  → préfixe "01"
+//   - MTN   → préfixe "05"
+//   - Orange→ préfixe "07"
+// Cette fonction ramène TOUJOURS un numéro vers le même format canonique
+// (+225 + 10 chiffres), pour qu'un même client ne soit jamais compté comme
+// deux clients différents selon le format reçu.
+
 const PREFIXES_MOOV = ['01', '02', '03', '40', '41', '42', '43', '50', '51', '52', '53', '70', '71', '72', '73'];
 const PREFIXES_MTN = ['04', '05', '06', '44', '45', '46', '54', '55', '56', '64', '65', '66', '74', '75', '76', '84', '85', '86', '94', '95', '96'];
 const PREFIXES_ORANGE = ['07', '08', '09', '47', '48', '49', '57', '58', '59', '67', '68', '69', '77', '78', '79', '87', '88', '89', '97', '98'];
@@ -54,15 +65,18 @@ function normaliserNumeroIvoirien(numeroBrut) {
 
   let digits = numeroBrut.replace('whatsapp:', '').replace('+', '');
 
+  // Retire le code pays 225 s'il est présent, pour travailler sur le numéro local
   if (digits.startsWith('225')) {
     digits = digits.slice(3);
   } else {
+    // Numéro non-ivoirien (ex: numéro de test US Meta) : on ne touche à rien
     return `+${digits}`;
   }
 
   let numeroLocalFinal = digits;
 
   if (digits.length === 8) {
+    // Ancien format : on retrouve l'opérateur via les 2 premiers chiffres
     const prefixeAncien = digits.slice(0, 2);
     let prefixeNouveau = null;
     if (PREFIXES_MOOV.includes(prefixeAncien)) prefixeNouveau = '01';
@@ -75,20 +89,37 @@ function normaliserNumeroIvoirien(numeroBrut) {
       console.warn(`Numéro ivoirien à 8 chiffres non reconnu (préfixe ${prefixeAncien}) : ${numeroBrut}`);
     }
   }
+  // Si digits.length === 10, c'est déjà le nouveau format : rien à faire.
+  // Tout autre cas (longueur inattendue) : on laisse tel quel, par sécurité.
 
   return `+225${numeroLocalFinal}`;
 }
 
+// Convertit un numéro au format attendu par l'API Meta : chiffres uniquement,
+// sans "+" ni préfixe "whatsapp:". Ex: "+2250700000000" → "2250700000000"
 function versFormatMeta(numero) {
   return numero.replace('whatsapp:', '').replace('+', '');
 }
 
+/**
+ * Claude entoure parfois sa réponse JSON de balises markdown (```json ... ```).
+ * Cette fonction retire ces balises avant parsing, pour éviter des échecs
+ * silencieux de JSON.parse() sur du texte par ailleurs valide.
+ */
 function nettoyerJSON(raw) {
   if (!raw) return raw;
   return raw.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
 }
 
 // ─── PROFIL CLIENT ────────────────────────────────────────────────────────────
+
+/**
+ * Récupère le profil d'un client depuis Supabase.
+ * La table `client_profiles` doit exister avec les colonnes :
+ *   - whatsapp_number (text, primary key)
+ *   - profile (jsonb)
+ *   - updated_at (timestamptz)
+ */
 async function getClientProfile(whatsappNumber) {
   const { data, error } = await supabase
     .from('client_profiles')
@@ -103,6 +134,10 @@ async function getClientProfile(whatsappNumber) {
   return data ? data.profile : null;
 }
 
+/**
+ * Sauvegarde ou met à jour le profil d'un client.
+ * On fusionne avec l'existant pour ne jamais écraser des données déjà présentes.
+ */
 async function saveClientProfile(whatsappNumber, profileUpdate) {
   const existing = await getClientProfile(whatsappNumber);
   const merged = { ...(existing || {}), ...profileUpdate };
@@ -116,6 +151,11 @@ async function saveClientProfile(whatsappNumber, profileUpdate) {
   }
 }
 
+/**
+ * Formate le profil en une ligne compacte pour injection dans le system prompt.
+ * Ex : "Profil client — Nom: Aya | Prix Robe Bleue: 5000F | VIP: oui"
+ * Coût : ~15-20 tokens. Négligeable.
+ */
 function formatProfileForPrompt(profile) {
   if (!profile || Object.keys(profile).length === 0) return '';
 
@@ -126,7 +166,13 @@ function formatProfileForPrompt(profile) {
   return `\n\n[Profil client connu] ${parts}`;
 }
 
+/**
+ * Demande à Claude d'extraire les infos importantes de la conversation
+ * pour mettre à jour le profil client. Appel léger (max_tokens: 150).
+ * Ne s'exécute que si la conversation contient des infos potentiellement utiles.
+ */
 async function extractAndUpdateProfile(whatsappNumber, history) {
+  // On ne tente l'extraction que si l'historique est suffisant
   if (!history || history.length < 2) return;
 
   const transcript = history
@@ -145,7 +191,7 @@ Exemples valides :
 ${transcript}`;
 
   try {
-    const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -173,11 +219,13 @@ ${transcript}`;
       console.log(`Profil mis à jour pour ${whatsappNumber}:`, profileUpdate);
     }
   } catch (err) {
+    // Extraction silencieuse — une erreur ici ne doit jamais bloquer la réponse principale
     console.error('Extraction profil échouée (non bloquant):', err.message);
   }
 }
 
 // ─── HISTORIQUE ───────────────────────────────────────────────────────────────
+
 async function getHistoryFromSupabase(sessionId) {
   const { data, error } = await supabase
     .from('conversations')
@@ -193,6 +241,12 @@ async function getHistoryFromSupabase(sessionId) {
   return (data || []).reverse();
 }
 
+/**
+ * Récupère les messages du jour pour UN SEUL commerçant.
+ * Le session_id est toujours construit comme "phoneNumberId:numeroClient",
+ * donc on filtre avec un LIKE sur ce préfixe pour isoler ses conversations
+ * de celles des autres commerçants.
+ */
 async function getTodayMessagesForMerchant(phoneNumberId) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -222,6 +276,13 @@ async function saveMessageToSupabase(sessionId, role, content) {
 }
 
 // ─── COMMERÇANTS (MULTI-TENANT) ───────────────────────────────────────────────
+//
+// Un seul webhook Meta reçoit les messages de TOUS les commerçants. Chaque
+// message entrant contient l'ID du numéro qui l'a reçu (value.metadata.phone_
+// number_id) — c'est cet ID qui permet de savoir quel commerçant est concerné,
+// et donc quel system_prompt utiliser. Table Supabase : `merchants`, qui est
+// désormais la source unique de vérité (config technique + infos commerciales).
+
 async function getMerchant(phoneNumberId) {
   const { data, error } = await supabase
     .from('merchants')
@@ -236,6 +297,9 @@ async function getMerchant(phoneNumberId) {
   return data;
 }
 
+/**
+ * Récupère tous les commerçants actifs, pour le bilan quotidien multi-tenant.
+ */
 async function getMerchantsActifs() {
   const { data, error } = await supabase
     .from('merchants')
@@ -250,6 +314,11 @@ async function getMerchantsActifs() {
 }
 
 // ─── ACCÈS ────────────────────────────────────────────────────────────────────
+//
+// Le statut de suspension vit désormais dans merchants.suspendu (table `clients`
+// abandonnée). Le sessionId étant construit "phoneNumberId:numeroClient", on
+// extrait le phoneNumberId pour retrouver le bon commerçant.
+
 async function estSuspendu(sessionId) {
   const phoneNumberId = sessionId.split(':')[0];
 
@@ -268,6 +337,12 @@ async function estSuspendu(sessionId) {
 }
 
 // ─── SÉCURITÉ WEBHOOK META ─────────────────────────────────────────────────────
+//
+// Meta signe chaque requête webhook avec HMAC SHA256 (header X-Hub-Signature-256),
+// calculé à partir du corps brut de la requête et de l'App Secret de l'app Meta.
+// Tant que META_APP_SECRET n'est pas configuré sur Render, on laisse passer sans
+// vérifier (phase de test) — à activer impérativement avant la mise en prod réelle.
+
 function verifierSignatureMeta(req, res, next) {
   if (!META_APP_SECRET) {
     return next();
@@ -291,6 +366,7 @@ function verifierSignatureMeta(req, res, next) {
 }
 
 // ─── ENVOI DE MESSAGES VIA META GRAPH API ─────────────────────────────────────
+
 async function sendWhatsAppMessage(fromPhoneNumberId, to, text) {
   const toMeta = versFormatMeta(to);
 
@@ -318,8 +394,9 @@ async function sendWhatsAppMessage(fromPhoneNumberId, to, text) {
 }
 
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
+
 async function askClaude(history, systemPrompt) {
-  const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -354,7 +431,7 @@ async function askClaudeReporting(transcript) {
     "3. Le produit le plus demandé." +
     REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
-  const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -375,6 +452,20 @@ async function askClaudeReporting(transcript) {
 }
 
 // ─── DÉTECTION DE COMMANDE CONFIRMÉE (ALERTE IMMÉDIATE) ───────────────────────
+//
+// Contrairement à l'extraction de profil (non-bloquante, silencieuse en cas
+// d'échec), cette détection est critique : une commande manquée est une vente
+// perdue. On attend son résultat avant de considérer le message traité, et en
+// cas d'échec on logue clairement (🚨) pour pouvoir vérifier manuellement,
+// plutôt que de laisser l'erreur disparaître sans trace.
+
+/**
+ * Extrait les détails d'une commande (produit, prix, adresse, heure de
+ * livraison) à partir de la conversation. Appelée UNIQUEMENT quand le code a
+ * déjà vérifié que la réponse du bot contient la phrase verrouillée
+ * "Commande confirmée !" — plus besoin de faire juger la confirmation par
+ * l'IA, seulement d'en extraire les détails.
+ */
 async function extraireDetailsCommande(transcript) {
   const systemPrompt =
     "Analyse cet échange WhatsApp entre un client et un vendeur. Une commande vient d'être confirmée. " +
@@ -383,7 +474,7 @@ async function extraireDetailsCommande(transcript) {
     "{\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque).";
 
   try {
-    const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -413,9 +504,20 @@ async function extraireDetailsCommande(transcript) {
   }
 }
 
+/**
+ * Envoie une alerte WhatsApp immédiate au propriétaire dès qu'une commande est
+ * confirmée par un client. La confirmation n'est plus jugée par l'IA : le bot
+ * est configuré pour écrire exactement "Commande confirmée !" au début de sa
+ * réponse quand (et seulement quand) le client vient de confirmer — le code
+ * n'a qu'à vérifier la présence de cette phrase verrouillée, ce qui élimine
+ * les faux positifs/négatifs liés à l'interprétation.
+ * On compare ensuite le détail de la commande (produit + adresse + heure) à
+ * la dernière commande déjà alertée pour ce client, pour éviter un doublon si
+ * le bot répète "Commande confirmée !" plusieurs fois pour la même commande.
+ */
 async function detecterEtAlerterCommande(sessionId, merchant, from, history, reply) {
   if (!reply.includes('Commande confirmée')) {
-    return;
+    return; // Pas de confirmation explicite dans cette réponse — rien à faire
   }
 
   const profile = await getClientProfile(sessionId);
@@ -427,6 +529,11 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
   const detection = await extraireDetailsCommande(transcript);
   console.log(`Commande confirmée détectée pour ${sessionId} — détails :`, JSON.stringify(detection));
 
+  // On compare au détail exact de la dernière commande déjà alertée pour ce
+  // client (pas juste "aujourd'hui") : si le client répète sa confirmation
+  // dans la même conversation, on n'alerte pas deux fois pour LA MÊME commande.
+  // Mais si les détails diffèrent (même le même jour), c'est une nouvelle
+  // commande — le client peut très bien commander plusieurs fois par jour.
   const signatureNouvelle = `${detection.produit || ''}|${detection.adresse || ''}|${detection.heure_livraison || ''}`;
   const signaturePrecedente = profile?.derniere_commande_alertee || '';
 
@@ -455,6 +562,11 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
   console.log(`Alerte commande envoyée pour ${merchant.nom_commerce} (client ${from})`);
 }
 
+/**
+ * Enregistre chaque commande détectée dans la table `commandes`, pour servir
+ * de base au bilan hebdomadaire. Aucune saisie manuelle : ça s'exécute
+ * automatiquement, au même moment que l'alerte envoyée au marchand.
+ */
 async function enregistrerCommande(merchant, from, detection) {
   const { error } = await supabase.from('commandes').insert([{
     phone_number_id: merchant.phone_number_id,
@@ -472,6 +584,11 @@ async function enregistrerCommande(merchant, from, detection) {
 }
 
 // ─── BILAN QUOTIDIEN (MULTI-TENANT) ───────────────────────────────────────────
+//
+// Boucle sur chaque commerçant actif, génère un bilan séparé à partir de SES
+// SEULES conversations du jour, et l'envoie sur SON numéro de propriétaire —
+// depuis son propre phone_number_id (pas celui de NTA).
+
 async function envoyerBilanQuotidien() {
   console.log('--- Déclenchement du bilan multi-tenant ---');
 
@@ -519,21 +636,40 @@ async function envoyerBilanQuotidien() {
 }
 
 cron.schedule('0 18 * * *', () => {
-  envoyerBilanQuotidien().catch(err => console.error('Erreur Cron quotidien:', err.message));
+  envoyerBilanQuotidien();
 });
 
 // ─── BILAN HEBDOMADAIRE ────────────────────────────────────────────────────────
+//
+// S'appuie sur la table `commandes`, alimentée automatiquement à chaque
+// alerte de commande confirmée (voir enregistrerCommande). Aucune saisie
+// manuelle nécessaire. Vocabulaire volontairement prudent ("environ",
+// "estimation") car on ne sait pas si chaque commande a été réellement
+// livrée/payée — ce ne sont que des commandes confirmées par le client.
+
+/**
+ * Extrait un nombre à partir d'un texte de prix libre (ex: "50000F" → 50000).
+ * Retourne 0 si aucun chiffre n'est trouvé (ex: "non précisé").
+ */
 function extrairePrixNumerique(prixTexte) {
   if (!prixTexte) return 0;
   const chiffres = prixTexte.replace(/[^\d]/g, '');
   return chiffres ? parseInt(chiffres, 10) : 0;
 }
 
+/**
+ * Récupère les commandes d'un commerçant sur une plage de jours donnée,
+ * en partant d'aujourd'hui. Ex: recupererCommandes(phoneNumberId, 7, 0) =
+ * les 7 derniers jours ; recupererCommandes(phoneNumberId, 14, 7) = les
+ * 7 jours d'avant (pour comparaison semaine sur semaine).
+ */
 async function recupererCommandes(phoneNumberId, joursDebut, joursFin) {
   const debut = new Date();
   debut.setHours(0, 0, 0, 0);
   debut.setDate(debut.getDate() - joursDebut);
 
+  // Si joursFin est 0 (semaine en cours), la borne de fin doit être MAINTENANT
+  // (pas minuit aujourd'hui), sinon les commandes du jour même sont exclues.
   const fin = new Date();
   if (joursFin > 0) {
     fin.setHours(0, 0, 0, 0);
@@ -554,6 +690,11 @@ async function recupererCommandes(phoneNumberId, joursDebut, joursFin) {
   return data || [];
 }
 
+/**
+ * Calcule les statistiques brutes d'une liste de commandes : nombre total,
+ * chiffre d'affaires estimé (somme des prix numériques trouvés), et produit
+ * le plus fréquent.
+ */
 function calculerStats(commandes) {
   const nombre = commandes.length;
   const chiffreAffaires = commandes.reduce((total, c) => total + extrairePrixNumerique(c.prix_estime), 0);
@@ -575,6 +716,10 @@ function calculerStats(commandes) {
   return { nombre, chiffreAffaires, produitTop };
 }
 
+/**
+ * Demande à Claude de reformuler les statistiques en un message WhatsApp
+ * naturel et prudent (jamais de chiffre présenté comme certain).
+ */
 async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemainePrecedente) {
   const systemPrompt =
     "Tu es l'assistant de gestion d'un commerçant ivoirien. Rédige un bilan HEBDOMADAIRE en français, chaleureux et simple, en 4-5 phrases maximum. " +
@@ -588,7 +733,7 @@ async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemaine
 Cette semaine : environ ${statsSemaine.nombre} commande(s) confirmée(s), chiffre d'affaires estimé à environ ${statsSemaine.chiffreAffaires} FCFA, produit le plus demandé : ${statsSemaine.produitTop || 'aucun'}.
 Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chiffre d'affaires estimé à environ ${statsSemainePrecedente.chiffreAffaires} FCFA.`;
 
-  const response = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -608,6 +753,11 @@ Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chi
   return data.content[0].text;
 }
 
+/**
+ * Boucle sur chaque commerçant actif, calcule ses statistiques de la semaine
+ * (et de la semaine précédente pour comparaison), et envoie le bilan
+ * hebdomadaire à son numero_proprietaire.
+ */
 async function envoyerBilanHebdomadaire() {
   console.log('--- Déclenchement du bilan hebdomadaire ---');
 
@@ -650,12 +800,224 @@ async function envoyerBilanHebdomadaire() {
 }
 
 cron.schedule('0 20 * * 0', () => {
-  envoyerBilanHebdomadaire().catch(err => console.error('Erreur Cron hebdomadaire:', err.message));
+  envoyerBilanHebdomadaire();
 });
 
 // ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
+
+// Fallback utilisé uniquement si un commerçant n'a pas encore de system_prompt
+// renseigné dans Supabase — les règles de formatage/émoticônes sont ajoutées
+// une seule fois, centralement, dans le webhook (pas ici).
 const SYSTEM_WHATSAPP_BASE =
   "Tu es l'assistant WhatsApp d'un commerçant ivoirien. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
 
 const SYSTEM_DEMO =
-  "Tu es l'assist
+  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+
+// ─── ROUTES ───────────────────────────────────────────────────────────────────
+
+app.get('/', (req, res) => {
+  res.send('NTA Assistant backend en ligne ✅');
+});
+
+// Route de vérification du Webhook Meta (Semaine 2, Étape 1 — déjà validée)
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+      console.log('WEBHOOK_VERIFIED');
+      return res.status(200).send(challenge);
+    } else {
+      return res.sendStatus(403);
+    }
+  }
+  return res.sendStatus(400);
+});
+
+app.get('/trigger-report', async (req, res) => {
+  const secretFourni = req.query.secret || req.headers['x-cron-secret'];
+  if (!CRON_SECRET || secretFourni !== CRON_SECRET) {
+    return res.status(403).json({ error: 'Accès refusé' });
+  }
+  // Réponse volontairement courte pour cron-job.org (qui rejette les réponses
+  // trop volumineuses) — le détail complet par commerçant reste dans les logs
+  // Render, consultable manuellement si besoin de vérifier.
+  const resultat = await envoyerBilanQuotidien();
+  res.json({ ok: true });
+});
+
+app.get('/trigger-weekly-report', async (req, res) => {
+  const secretFourni = req.query.secret || req.headers['x-cron-secret'];
+  if (!CRON_SECRET || secretFourni !== CRON_SECRET) {
+    return res.status(403).json({ error: 'Accès refusé' });
+  }
+  await envoyerBilanHebdomadaire();
+  res.json({ ok: true });
+});
+
+// ─── ROUTES DASHBOARD (GESTION DES COMMERÇANTS) ───────────────────────────────
+//
+// Utilisées par le tableau de bord HTML. `phone_number_id` sert de clé (fiable,
+// jamais mal saisi, contrairement à un numéro de téléphone). Le champ
+// `suspendu` contrôle l'accès réel du bot (coupure pour non-paiement) — dès
+// qu'il passe à true, le webhook cesse de répondre au client final concerné.
+
+app.get('/merchants', async (req, res) => {
+  const { data, error } = await supabase.from('merchants').select('*');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ merchants: data || [] });
+});
+
+app.post('/merchants', async (req, res) => {
+  const {
+    phone_number_id, nom_commerce, system_prompt,
+    numero_proprietaire, prix, secteur, essai, date_debut,
+  } = req.body;
+
+  if (!phone_number_id || !nom_commerce || !numero_proprietaire) {
+    return res.status(400).json({ error: 'phone_number_id, nom_commerce et numero_proprietaire sont requis' });
+  }
+
+  const { data, error } = await supabase.from('merchants').insert([{
+    phone_number_id,
+    nom_commerce,
+    system_prompt: system_prompt || null,
+    actif: true,
+    suspendu: false,
+    numero_proprietaire,
+    prix: prix || 29000,
+    secteur: secteur || null,
+    essai: essai !== undefined ? essai : true,
+    date_debut: date_debut || new Date().toISOString(),
+  }]).select();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ merchant: data[0] });
+});
+
+app.patch('/merchants/:phone_number_id', async (req, res) => {
+  const { phone_number_id } = req.params;
+  const { data, error } = await supabase
+    .from('merchants')
+    .update(req.body)
+    .eq('phone_number_id', phone_number_id)
+    .select();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ merchant: data[0] });
+});
+
+app.delete('/merchants/:phone_number_id', async (req, res) => {
+  const { phone_number_id } = req.params;
+  const { error } = await supabase.from('merchants').delete().eq('phone_number_id', phone_number_id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
+app.post('/webhook', verifierSignatureMeta, async (req, res) => {
+  // Meta attend une réponse 200 très rapide, sinon il considère l'envoi en échec
+  // et retente (jusqu'à créer des doublons). On répond tout de suite, puis on
+  // traite le message et on envoie la réponse séparément via l'API Graph.
+  res.sendStatus(200);
+
+  try {
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const message = value?.messages?.[0];
+
+    // Les webhooks Meta couvrent aussi les accusés de statut (envoyé/lu/livré),
+    // qui n'ont pas de champ "messages" — on les ignore silencieusement.
+    if (!message) return;
+
+    // ID du numéro Meta qui a REÇU ce message — identifie le commerçant concerné.
+    const phoneNumberId = value?.metadata?.phone_number_id;
+    const incomingMsg = message.text?.body;
+    const from = normaliserNumeroIvoirien(message.from);
+
+    if (!incomingMsg || !from || !phoneNumberId) return;
+
+    // Identification du commerçant via son numéro Meta (table `merchants`)
+    const merchant = await getMerchant(phoneNumberId);
+    if (!merchant) {
+      console.error(`Aucun commerçant trouvé pour phone_number_id=${phoneNumberId}`);
+      return;
+    }
+    if (!merchant.actif) {
+      await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_ACCES_COUPE);
+      return;
+    }
+
+    // On isole l'historique et le profil par commerçant ET par client, pour
+    // qu'un même numéro client ne mélange jamais les conversations de deux
+    // commerçants différents.
+    const sessionId = `${phoneNumberId}:${from}`;
+
+    const suspendu = await estSuspendu(sessionId);
+    if (suspendu) {
+      await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_ACCES_COUPE);
+      return;
+    }
+
+    // Sauvegarde du message entrant
+    await saveMessageToSupabase(sessionId, 'user', incomingMsg);
+
+    // Récupération parallèle : historique + profil client
+    const [history, profile] = await Promise.all([
+      getHistoryFromSupabase(sessionId),
+      getClientProfile(sessionId),
+    ]);
+
+    // System prompt propre au commerçant (fallback sur le prompt générique
+    // si jamais system_prompt est vide dans Supabase)
+    const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
+    const profileLine = formatProfileForPrompt(profile);
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + profileLine;
+
+    // Réponse principale
+    const reply = await askClaude(history, systemPrompt);
+    await saveMessageToSupabase(sessionId, 'assistant', reply);
+
+    // Extraction et mise à jour du profil en arrière-plan (non bloquant —
+    // une info de confort manquée n'a pas de conséquence grave)
+    const historyForExtraction = [...history, { role: 'assistant', content: reply }];
+    extractAndUpdateProfile(sessionId, historyForExtraction).catch(() => {});
+
+    await sendWhatsAppMessage(phoneNumberId, from, reply);
+
+    // Détection de commande confirmée + alerte immédiate au marchand.
+    // Contrairement à l'extraction de profil, on ATTEND ce résultat et on
+    // logue clairement (🚨) en cas d'échec — une commande manquée est une
+    // vente perdue, pas un détail de confort.
+    try {
+      await detecterEtAlerterCommande(sessionId, merchant, from, history, reply);
+    } catch (err) {
+      console.error(`🚨 Erreur alerte commande pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
+    }
+  } catch (err) {
+    console.error('Erreur traitement webhook Meta:', err.message);
+  }
+});
+
+app.post('/demo', async (req, res) => {
+  const { message, sessionId } = req.body;
+  if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
+  try {
+    await saveMessageToSupabase(sessionId, 'user', message);
+    const history = await getHistoryFromSupabase(sessionId);
+    const reply = await askClaude(history, SYSTEM_DEMO);
+    await saveMessageToSupabase(sessionId, 'assistant', reply);
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Serveur lancé sur le port ${PORT}`));
