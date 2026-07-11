@@ -447,7 +447,10 @@ async function askClaudeReporting(transcript) {
     }),
   });
 
-  if (!response.ok) throw new Error('Erreur API Reporting');
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Erreur API Reporting : ${response.status} ${errText}`);
+  }
   const data = await response.json();
   return data.content[0].text;
 }
@@ -750,7 +753,10 @@ Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chi
     }),
   });
 
-  if (!response.ok) throw new Error('Erreur API Reporting hebdomadaire');
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Erreur API Reporting hebdomadaire : ${response.status} ${errText}`);
+  }
   const data = await response.json();
   return data.content[0].text;
 }
