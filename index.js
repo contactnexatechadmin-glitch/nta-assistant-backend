@@ -418,6 +418,59 @@ async function sendWhatsAppMessage(fromPhoneNumberId, to, text) {
   return response.json();
 }
 
+/**
+ * Nettoie un texte avant de l'insérer dans un paramètre de template Meta :
+ * l'API rejette les paramètres contenant des sauts de ligne ou plus de 4
+ * espaces/tabulations consécutifs.
+ */
+function nettoyerParametreTemplate(texte) {
+  return (texte || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Envoie le bilan (quotidien ou hebdomadaire) via le template Meta approuvé
+ * "bilan_commercant". Contrairement à sendWhatsAppMessage (texte libre, valide
+ * uniquement dans la fenêtre des 24h), un template approuvé peut être envoyé
+ * à tout moment — indispensable puisque le propriétaire n'écrit pas forcément
+ * au bot chaque jour.
+ */
+async function sendBilanTemplate(fromPhoneNumberId, to, nomCommerce, periode, texteBilan) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'template',
+      template: {
+        name: 'bilan_commercant',
+        language: { code: 'fr' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nettoyerParametreTemplate(nomCommerce) },
+            { type: 'text', text: nettoyerParametreTemplate(periode) },
+            { type: 'text', text: nettoyerParametreTemplate(texteBilan) },
+          ],
+        }],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi template bilan Meta:', response.status, errText);
+    throw new Error(`Meta API (template) a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
+}
+
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
 
 async function askClaude(history, systemPrompt) {
@@ -652,7 +705,7 @@ async function envoyerBilanQuotidien() {
         .join('\n');
       const bilan = await askClaudeReporting(transcript);
 
-      await sendWhatsAppMessage(phone_number_id, numero_proprietaire, `📊 *BILAN DE LA JOURNÉE — ${nom_commerce}*\n\n${bilan}`);
+      await sendBilanTemplate(phone_number_id, numero_proprietaire, nom_commerce, 'la journée', bilan);
       console.log(`Bilan envoyé avec succès pour ${nom_commerce} !`);
       resultats.push({ commerce: nom_commerce, envoye: true });
     } catch (err) {
@@ -824,7 +877,7 @@ async function envoyerBilanHebdomadaire() {
 
       const bilan = await formulerBilanHebdomadaire(nom_commerce, statsSemaine, statsSemainePrecedente);
 
-      await sendWhatsAppMessage(phone_number_id, numero_proprietaire, `📈 *BILAN DE LA SEMAINE — ${nom_commerce}*\n\n${bilan}`);
+      await sendBilanTemplate(phone_number_id, numero_proprietaire, nom_commerce, 'la semaine', bilan);
       console.log(`Bilan hebdomadaire envoyé avec succès pour ${nom_commerce} !`);
     } catch (err) {
       console.error(`Erreur bilan hebdomadaire pour ${nom_commerce} :`, err.message);
