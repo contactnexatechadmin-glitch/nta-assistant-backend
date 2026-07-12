@@ -38,6 +38,11 @@ const REGLE_FORMATAGE_WHATSAPP =
 const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
 
+const REGLE_PRECISION_EMOJI_PRODUIT =
+  "\n\nIMPORTANT - Précision de l'émoticône produit : quand tu mentionnes un produit précis, tu PEUX (et c'est encouragé) ajouter une émoticône qui l'illustre — ça aide beaucoup à la lecture, notamment pour les personnes moins à l'aise avec la lecture. " +
+  "Mais choisis-la avec exactitude selon le type réel de l'article : 👕 pour un t-shirt, 👔 UNIQUEMENT pour une chemise habillée, 👗 pour une robe, 👠 pour des chaussures à talon, 👟 pour des baskets/sport, 👜 pour un sac, 👖 pour un pantalon/jean. " +
+  "Si le type exact du produit n'est pas clair ou ne correspond à aucune de ces catégories précises, utilise l'émoticône générique 🛍️ plutôt que de deviner une émoticône qui pourrait être fausse.";
+
 const REGLE_CONFIRMATION_COMMANDE =
   "\n\nIMPORTANT - Confirmation de commande : quand un client a fini de préciser ce qu'il veut acheter (produit, adresse, heure de livraison), fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
   "Si le client répond ensuite positivement à cette question (oui, je confirme, d'accord, etc.) SANS apporter de correction ou changement au récapitulatif, commence OBLIGATOIREMENT ta réponse par exactement la phrase \"Commande confirmée !\" avant d'ajouter quoi que ce soit d'autre (même si le client enchaîne avec une autre question dans le même message). " +
@@ -507,7 +512,7 @@ async function askClaudeReporting(transcript) {
     "IMPORTANT : un client qui a SEULEMENT demandé un prix, un stock, ou une information, SANS confirmer vouloir acheter, n'est PAS un client prêt à acheter — dis plutôt qu'il \"s'est renseigné sur le prix\" ou \"a montré de l'intérêt sans confirmer\", ne dis jamais qu'il est \"prêt à commander\" dans ce cas. " +
     "Si aucun client n'a confirmé d'achat, dis-le clairement plutôt que d'exagérer une simple demande de prix. " +
     "3. Le produit le plus demandé." +
-    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -809,7 +814,7 @@ async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemaine
     "Utilise TOUJOURS un vocabulaire prudent : \"environ\", \"à peu près\", \"estimation\", jamais de chiffre présenté comme certain ou définitif. " +
     "Compare à la semaine précédente (en hausse / en baisse / stable) si les deux chiffres sont disponibles. " +
     "Mentionne le produit le plus demandé de la semaine." +
-    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT;
 
   const contenu = `Commerce : ${nomCommerce}
 Cette semaine : environ ${statsSemaine.nombre} commande(s) confirmée(s), chiffre d'affaires estimé à environ ${statsSemaine.chiffreAffaires} FCFA, produit le plus demandé : ${statsSemaine.produitTop || 'aucun'}.
