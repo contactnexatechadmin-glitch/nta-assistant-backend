@@ -102,6 +102,29 @@ function versFormatMeta(numero) {
 }
 
 /**
+ * Donne au bot la notion du temps réel, absente par défaut d'un LLM.
+ * Retourne une ligne à coller au system prompt, ex :
+ *   "[Info temps réel] Nous sommes actuellement : dimanche 12 juillet, 14h32 (heure d'Abidjan)."
+ * Le marchand ayant décrit ses horaires en texte libre dans son system_prompt
+ * (ex: "Lundi au samedi, 7h30-16h30"), Claude compare lui-même cette ligne à
+ * ces horaires pour savoir si la boutique est ouverte ou fermée — pas besoin
+ * de champ structuré séparé en base.
+ */
+function formatDateHeureAbidjan() {
+  const maintenant = new Date().toLocaleString('fr-FR', {
+    timeZone: 'Africa/Abidjan',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `\n\n[Info temps réel] Nous sommes actuellement : ${maintenant} (heure d'Abidjan). ` +
+    "Si cette date/heure tombe en dehors de tes horaires d'ouverture ou un jour de fermeture, dis-le HONNÊTEMENT et clairement au client dès le début de ta réponse (ne mens jamais sur le statut ouvert/fermé de la boutique). " +
+    "Ensuite, propose-lui de patienter jusqu'à la réouverture : tu peux prendre sa commande dès maintenant pour qu'elle soit livrée dès la reprise, au premier jour ouvrable.";
+}
+
+/**
  * Claude entoure parfois sa réponse JSON de balises markdown (```json ... ```).
  * Cette fonction retire ces balises avant parsing, pour éviter des échecs
  * silencieux de JSON.parse() sur du texte par ailleurs valide.
@@ -984,7 +1007,8 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     // si jamais system_prompt est vide dans Supabase)
     const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
     const profileLine = formatProfileForPrompt(profile);
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + profileLine;
+    const ligneStatutTemps = formatDateHeureAbidjan();
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + profileLine + ligneStatutTemps;
 
     // Réponse principale
     const reply = await askClaude(history, systemPrompt);
