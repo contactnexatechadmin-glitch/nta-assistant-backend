@@ -120,8 +120,10 @@ function formatDateHeureAbidjan() {
     minute: '2-digit',
   });
   return `\n\n[Info temps réel] Nous sommes actuellement : ${maintenant} (heure d'Abidjan). ` +
-    "Si cette date/heure tombe en dehors de tes horaires d'ouverture ou un jour de fermeture, dis-le HONNÊTEMENT et clairement au client dès le début de ta réponse (ne mens jamais sur le statut ouvert/fermé de la boutique). " +
-    "Ensuite, propose-lui de patienter jusqu'à la réouverture : tu peux prendre sa commande dès maintenant pour qu'elle soit livrée dès la reprise, au premier jour ouvrable.";
+    "Si cette date/heure tombe en dehors des horaires d'ouverture ou un jour de fermeture : dis-le HONNÊTEMENT au client, une seule fois, dans ta réponse (ne mens jamais sur le statut ouvert/fermé). " +
+    "MAIS ce n'est qu'une précision à donner en passant : tu CONTINUES la conversation commerciale normalement, exactement comme un jour ouvrable. Réponds quand même aux questions (prix, produits, disponibilité), argumente, essaie de convaincre le client d'acheter. " +
+    "Ne dis JAMAIS que tu vas transmettre la demande à quelqu'un d'autre, qu'une équipe va rappeler, ou que le client doit attendre l'ouverture pour avoir une réponse — c'est faux, tu es seul à gérer cette conversation et tu es capable de répondre toi-même immédiatement. " +
+    "Le seul impact réel de la fermeture : la LIVRAISON ne pourra se faire qu'à la réouverture. Utilise donc ça comme argument de vente, pas comme excuse pour ne pas répondre : prends sa commande maintenant, précise juste que la livraison se fera dès la reprise.";
 }
 
 /**
