@@ -49,6 +49,11 @@ const REGLE_CONFIRMATION_COMMANDE =
   "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas répondu positivement à la question de confirmation, ou s'il est en train de corriger/modifier sa commande. " +
   "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
 
+const REGLE_ESCALADE =
+  "\n\nIMPORTANT - Honnêteté et escalade vers le commerçant : tu es un assistant 100% autonome, aucun humain ne reprend la conversation derrière toi. Ne prétends JAMAIS \"vérifier le stock\", \"consulter l'équipe\" ou \"revenir vers le client\" si tu ne peux pas le faire toi-même — c'est un mensonge. " +
+  "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter, (4) le client semble clairement mécontent ou frustré — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
+  "N'utilise cette phrase exacte QUE dans ces quatre cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre.";
+
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
 // Depuis le 31 janvier 2021, la Côte d'Ivoire est passée de 8 à 10 chiffres.
@@ -670,6 +675,108 @@ async function enregistrerCommande(merchant, from, detection) {
   }
 }
 
+// ─── ALERTE D'ESCALADE (INFO MANQUANTE, RÉCLAMATION, NÉGOCIATION, MÉCONTENTEMENT) ──
+//
+// Même mécanique que l'alerte de commande : une phrase verrouillée dans le
+// prompt ("Notre équipe est informée et reviendra vers vous si besoin.")
+// déclenche la détection, plutôt que de faire juger l'IA sans ancrage fiable.
+
+/**
+ * Extrait la catégorie et un résumé court du motif d'escalade, à partir de la
+ * conversation. Appelée UNIQUEMENT quand le code a déjà vérifié la présence
+ * de la phrase verrouillée dans la réponse du bot.
+ */
+async function extraireDetailsEscalade(transcript) {
+  const systemPrompt =
+    "Le bot d'un commerçant vient d'escalader une situation vers le propriétaire. Analyse la conversation et détermine la catégorie exacte parmi ces quatre choix : " +
+    "\"info_manquante\" (une information précise manquait), \"reclamation\" (réclamation ou litige), \"negociation_hors_bareme\" (négociation de prix/condition hors barème), \"client_mecontent\" (client clairement frustré ou mécontent). " +
+    "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour : " +
+    "{\"categorie\":\"...\",\"resume\":\"...\"} — le résumé doit tenir en une phrase courte et concrète (ex: \"Le client demande si la livraison est possible à Yopougon, non précisé dans mes instructions\").";
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'accept-encoding': 'identity',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 200,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: `Échange :\n${transcript}` }],
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('🚨 Extraction détails escalade — API Claude a répondu', response.status);
+      return { categorie: 'info_manquante', resume: 'Détails non disponibles (erreur technique).' };
+    }
+
+    const data = await response.json();
+    const raw = nettoyerJSON(data.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim());
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('🚨 Extraction détails escalade échouée (vérifier manuellement) :', err.message);
+    return { categorie: 'info_manquante', resume: 'Détails non disponibles (erreur technique).' };
+  }
+}
+
+const LIBELLES_CATEGORIE_ESCALADE = {
+  info_manquante: 'Information manquante',
+  reclamation: 'Réclamation / litige',
+  negociation_hors_bareme: 'Négociation hors barème',
+  client_mecontent: 'Client mécontent',
+};
+
+/**
+ * Envoie une alerte WhatsApp immédiate au propriétaire dès que le bot escalade
+ * une situation (phrase verrouillée détectée). Une seule alerte par sujet
+ * précis pour ce client — comparaison au dernier motif déjà alerté, stocké
+ * dans client_profiles, pour éviter le spam si la conversation continue sur
+ * le même point.
+ */
+async function detecterEtAlerterEscalade(sessionId, merchant, from, history, reply) {
+  if (!reply.includes('Notre équipe est informée et reviendra vers vous')) {
+    return; // Pas d'escalade explicite dans cette réponse — rien à faire
+  }
+
+  const profile = await getClientProfile(sessionId);
+
+  const transcript = [...history, { role: 'assistant', content: reply }]
+    .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
+    .join('\n');
+
+  const detection = await extraireDetailsEscalade(transcript);
+  console.log(`Escalade détectée pour ${sessionId} — détails :`, JSON.stringify(detection));
+
+  const signatureNouvelle = `${detection.categorie || ''}|${detection.resume || ''}`;
+  const signaturePrecedente = profile?.derniere_escalade_alertee || '';
+
+  if (signatureNouvelle === signaturePrecedente) {
+    console.log(`Escalade — ${sessionId} : même sujet déjà alerté, on ignore.`);
+    return;
+  }
+
+  if (!merchant.numero_proprietaire) {
+    console.error(`🚨 Escalade pour ${merchant.nom_commerce} mais numero_proprietaire manquant — alerte impossible, vérifier Supabase`);
+    return;
+  }
+
+  const libelle = LIBELLES_CATEGORIE_ESCALADE[detection.categorie] || 'Situation à vérifier';
+  const texteAlerte =
+    `⚠️ *${libelle} — ${merchant.nom_commerce}*\n\n` +
+    `Client : ${from}\n` +
+    `Résumé : ${detection.resume || 'non précisé'}\n\n` +
+    `Le bot a informé le client que vous seriez tenu au courant.`;
+
+  await sendWhatsAppMessage(merchant.phone_number_id, merchant.numero_proprietaire, texteAlerte);
+  await saveClientProfile(sessionId, { derniere_escalade_alertee: signatureNouvelle });
+  console.log(`Alerte escalade envoyée pour ${merchant.nom_commerce} (client ${from}) — ${libelle}`);
+}
+
 // ─── BILAN QUOTIDIEN (MULTI-TENANT) ───────────────────────────────────────────
 //
 // Boucle sur chaque commerçant actif, génère un bilan séparé à partir de SES
@@ -1068,7 +1175,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
     const profileLine = formatProfileForPrompt(profile);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + profileLine + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + ligneStatutTemps;
 
     // Réponse principale
     const reply = await askClaude(history, systemPrompt);
@@ -1089,6 +1196,14 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       await detecterEtAlerterCommande(sessionId, merchant, from, history, reply);
     } catch (err) {
       console.error(`🚨 Erreur alerte commande pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
+    }
+
+    // Détection d'escalade (info manquante, réclamation, négociation hors
+    // barème, client mécontent) + alerte immédiate au marchand.
+    try {
+      await detecterEtAlerterEscalade(sessionId, merchant, from, history, reply);
+    } catch (err) {
+      console.error(`🚨 Erreur alerte escalade pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
     }
   } catch (err) {
     console.error('Erreur traitement webhook Meta:', err.message);
