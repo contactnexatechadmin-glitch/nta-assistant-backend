@@ -51,8 +51,8 @@ const REGLE_CONFIRMATION_COMMANDE =
 
 const REGLE_ESCALADE =
   "\n\nIMPORTANT - Honnêteté et escalade vers le commerçant : tu es un assistant 100% autonome, aucun humain ne reprend la conversation derrière toi. Ne prétends JAMAIS \"vérifier le stock\", \"consulter l'équipe\" ou \"revenir vers le client\" si tu ne peux pas le faire toi-même — c'est un mensonge. " +
-  "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter, (4) le client semble clairement mécontent ou frustré — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
-  "N'utilise cette phrase exacte QUE dans ces quatre cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre.";
+  "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
+  "N'utilise cette phrase exacte QUE dans ces trois cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -689,7 +689,7 @@ async function enregistrerCommande(merchant, from, detection) {
 async function extraireDetailsEscalade(transcript) {
   const systemPrompt =
     "Le bot d'un commerçant vient d'escalader une situation vers le propriétaire. Analyse la conversation et détermine la catégorie exacte parmi ces quatre choix : " +
-    "\"info_manquante\" (une information précise manquait), \"reclamation\" (réclamation ou litige), \"negociation_hors_bareme\" (négociation de prix/condition hors barème), \"client_mecontent\" (client clairement frustré ou mécontent). " +
+    "\"info_manquante\" (une information précise manquait), \"reclamation\" (réclamation ou litige), \"negociation_hors_bareme\" (négociation de prix/condition hors barème). " +
     "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour : " +
     "{\"categorie\":\"...\",\"resume\":\"...\"} — le résumé doit tenir en une phrase courte et concrète (ex: \"Le client demande si la livraison est possible à Yopougon, non précisé dans mes instructions\").";
 
@@ -728,7 +728,6 @@ const LIBELLES_CATEGORIE_ESCALADE = {
   info_manquante: 'Information manquante',
   reclamation: 'Réclamation / litige',
   negociation_hors_bareme: 'Négociation hors barème',
-  client_mecontent: 'Client mécontent',
 };
 
 /**
