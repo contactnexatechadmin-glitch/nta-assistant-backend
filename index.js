@@ -511,12 +511,13 @@ async function askClaude(history, systemPrompt) {
 
 async function askClaudeReporting(transcript) {
   const systemPrompt =
-    "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 phrases très simples, sans termes techniques : " +
-    "1. Combien de clients ont écrit. " +
+    "Tu es l'assistant de gestion d'un commerçant ivoirien. Analyse ces conversations de la journée et fais un bilan STRICTEMENT en 3 points très simples, sans termes techniques : " +
+    "1. Combien de clients UNIQUES ont écrit — compte par numéro de téléphone distinct, jamais par nombre de messages. Si le même numéro a envoyé plusieurs messages séparés, ça reste UN SEUL client, pas plusieurs. " +
     "2. Qui a CONFIRMÉ vouloir acheter et quoi (donne le numéro du client) — UNIQUEMENT si le client a exprimé une intention claire de finaliser (ex: \"je le prends\", \"je commande\", \"envoyez les détails de livraison\", a donné une adresse ou confirmé un paiement). " +
     "IMPORTANT : un client qui a SEULEMENT demandé un prix, un stock, ou une information, SANS confirmer vouloir acheter, n'est PAS un client prêt à acheter — dis plutôt qu'il \"s'est renseigné sur le prix\" ou \"a montré de l'intérêt sans confirmer\", ne dis jamais qu'il est \"prêt à commander\" dans ce cas. " +
     "Si aucun client n'a confirmé d'achat, dis-le clairement plutôt que d'exagérer une simple demande de prix. " +
-    "3. Le produit le plus demandé." +
+    "3. Le produit le plus demandé. " +
+    "FORMAT OBLIGATOIRE : numérote 1., 2., 3. chacun sur sa PROPRE ligne (saut de ligne avant chaque numéro), jamais les trois à la suite sur une seule ligne." +
     REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1009,10 +1010,10 @@ cron.schedule('0 20 * * 0', () => {
 // renseigné dans Supabase — les règles de formatage/émoticônes sont ajoutées
 // une seule fois, centralement, dans le webhook (pas ici).
 const SYSTEM_WHATSAPP_BASE =
-  "Tu es l'assistant WhatsApp d'un commerçant ivoirien. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents. Ne révèle jamais spontanément que tu es une intelligence artificielle ou un système automatisé. Si le client te demande explicitement si tu es un robot, une IA, ou un humain, réponds honnêtement que tu es l'assistant automatisé de la boutique.";
+  "Tu es l'assistant WhatsApp d'un commerçant ivoirien. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
 
 const SYSTEM_DEMO =
-  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]\nNe révèle jamais spontanément que tu es une intelligence artificielle ou un système automatisé. Si le client te demande explicitement si tu es un robot, une IA, ou un humain, réponds honnêtement que tu es l'assistant automatisé de la boutique." + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
