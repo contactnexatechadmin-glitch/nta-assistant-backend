@@ -686,12 +686,13 @@ async function enregistrerCommande(merchant, from, detection) {
  * conversation. Appelée UNIQUEMENT quand le code a déjà vérifié la présence
  * de la phrase verrouillée dans la réponse du bot.
  */
-async function extraireDetailsEscalade(transcript) {
+async function extraireDetailsEscalade(transcript, dernierMessageClient) {
   const systemPrompt =
-    "Le bot d'un commerçant vient d'escalader une situation vers le propriétaire. Analyse la conversation et détermine la catégorie exacte parmi ces quatre choix : " +
+    "Le bot d'un commerçant vient d'escalader une situation vers le propriétaire, DÉCLENCHÉE PAR LE TOUT DERNIER MESSAGE DU CLIENT (fourni séparément ci-dessous). " +
+    "Détermine la catégorie exacte de CE dernier message précis (ignore les sujets plus anciens de l'historique déjà résolus ou différents) parmi ces trois choix : " +
     "\"info_manquante\" (une information précise manquait), \"reclamation\" (réclamation ou litige), \"negociation_hors_bareme\" (négociation de prix/condition hors barème). " +
     "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour : " +
-    "{\"categorie\":\"...\",\"resume\":\"...\"} — le résumé doit tenir en une phrase courte et concrète (ex: \"Le client demande si la livraison est possible à Yopougon, non précisé dans mes instructions\").";
+    "{\"categorie\":\"...\",\"resume\":\"...\"} — le résumé doit tenir en une phrase courte et concrète, basée sur CE dernier message (ex: \"Le client demande si la livraison est possible à Yopougon, non précisé dans mes instructions\").";
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -706,7 +707,7 @@ async function extraireDetailsEscalade(transcript) {
         model: 'claude-sonnet-4-6',
         max_tokens: 200,
         system: systemPrompt,
-        messages: [{ role: 'user', content: `Échange :\n${transcript}` }],
+        messages: [{ role: 'user', content: `Historique complet (contexte) :\n${transcript}\n\n---\nTOUT DERNIER MESSAGE DU CLIENT (celui qui a déclenché l'escalade) :\n${dernierMessageClient}` }],
       }),
     });
 
@@ -748,7 +749,9 @@ async function detecterEtAlerterEscalade(sessionId, merchant, from, history, rep
     .map(m => `${m.role === 'user' ? 'Client' : 'Bot'}: ${m.content}`)
     .join('\n');
 
-  const detection = await extraireDetailsEscalade(transcript);
+  const dernierMessageClient = [...history].reverse().find(m => m.role === 'user')?.content || '';
+
+  const detection = await extraireDetailsEscalade(transcript, dernierMessageClient);
   console.log(`Escalade détectée pour ${sessionId} — détails :`, JSON.stringify(detection));
 
   const signatureNouvelle = `${detection.categorie || ''}|${detection.resume || ''}`;
