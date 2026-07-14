@@ -9,6 +9,7 @@ const app = express();
 // verify() capture le corps brut de la requête, nécessaire pour valider la
 // signature HMAC de Meta (X-Hub-Signature-256) une fois META_APP_SECRET configuré.
 app.use(express.json({
+  limit: '15mb', // augmenté pour accepter les photos du catalogue envoyées en base64
   verify: (req, res, buf) => {
     req.rawBody = buf;
   },
@@ -346,6 +347,94 @@ async function getMerchantsActifs() {
     return [];
   }
   return data || [];
+}
+
+// ─── CATALOGUE PRODUITS (PHOTOS + VISION) ─────────────────────────────────────
+//
+// Permet à chaque commerçant d'avoir un catalogue de produits avec photo de
+// référence, stocké dans Supabase Storage (bucket "catalogue-produits", public)
+// et référencé dans la table `catalogue_produits`. Sert de base à la future
+// fonctionnalité de reconnaissance d'image (le bot compare la photo envoyée
+// par le client final aux photos de référence du catalogue).
+
+const NOM_BUCKET_CATALOGUE = 'catalogue-produits';
+
+/**
+ * Déduit l'extension de fichier à partir du type MIME reçu du dashboard
+ * (ex: "image/jpeg" → "jpg"). Retombe sur "jpg" par défaut si type inconnu.
+ */
+function extensionDepuisMimeType(mimeType) {
+  const table = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+  return table[mimeType] || 'jpg';
+}
+
+/**
+ * Upload une image (reçue en base64 depuis le dashboard) vers Supabase
+ * Storage, et retourne son URL publique. Le chemin de stockage est préfixé
+ * par le phone_number_id du commerçant, pour garder les photos de chaque
+ * commerçant isolées dans le bucket.
+ */
+async function uploaderPhotoCatalogue(phoneNumberId, imageBase64, mimeType) {
+  const buffer = Buffer.from(imageBase64, 'base64');
+  const extension = extensionDepuisMimeType(mimeType);
+  const cheminFichier = `${phoneNumberId}/${Date.now()}-${crypto.randomUUID()}.${extension}`;
+
+  const { error } = await supabase.storage
+    .from(NOM_BUCKET_CATALOGUE)
+    .upload(cheminFichier, buffer, { contentType: mimeType || 'image/jpeg', upsert: false });
+
+  if (error) {
+    throw new Error(`Erreur upload photo catalogue: ${error.message}`);
+  }
+
+  const { data } = supabase.storage.from(NOM_BUCKET_CATALOGUE).getPublicUrl(cheminFichier);
+  return data.publicUrl;
+}
+
+/**
+ * Supprime une photo du bucket à partir de son URL publique complète.
+ * Extrait le chemin relatif (après "/catalogue-produits/") pour l'appel
+ * de suppression Supabase, qui attend un chemin et non une URL.
+ */
+async function supprimerPhotoCatalogue(imageUrl) {
+  if (!imageUrl) return;
+  const marqueur = `/${NOM_BUCKET_CATALOGUE}/`;
+  const index = imageUrl.indexOf(marqueur);
+  if (index === -1) return;
+
+  const cheminFichier = imageUrl.slice(index + marqueur.length);
+  const { error } = await supabase.storage.from(NOM_BUCKET_CATALOGUE).remove([cheminFichier]);
+  if (error) {
+    console.error('Erreur suppression photo catalogue (non bloquant):', error.message);
+  }
+}
+
+async function getCatalogueProduits(phoneNumberId) {
+  const { data, error } = await supabase
+    .from('catalogue_produits')
+    .select('*')
+    .eq('phone_number_id', phoneNumberId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Erreur lecture catalogue produits:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+async function getProduitCatalogue(id) {
+  const { data, error } = await supabase
+    .from('catalogue_produits')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Erreur lecture produit catalogue:', error.message);
+    return null;
+  }
+  return data;
 }
 
 // ─── ACCÈS ────────────────────────────────────────────────────────────────────
@@ -1157,6 +1246,98 @@ app.delete('/merchants/:phone_number_id', async (req, res) => {
   const { error } = await supabase.from('merchants').delete().eq('phone_number_id', phone_number_id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
+});
+
+// ─── ROUTES CATALOGUE (GESTION DES PHOTOS PRODUITS) ───────────────────────────
+//
+// Utilisées par l'onglet "Catalogue" du dashboard, sur la fiche de chaque
+// commerçant. La photo arrive en base64 depuis le formulaire (pas de champ
+// de formulaire HTML classique, tout passe en JSON comme le reste de l'API).
+
+app.get('/merchants/:phone_number_id/catalogue', async (req, res) => {
+  const { phone_number_id } = req.params;
+  const produits = await getCatalogueProduits(phone_number_id);
+  res.json({ produits });
+});
+
+app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
+  const { phone_number_id } = req.params;
+  const { nom_produit, prix, description, image_base64, image_mime_type } = req.body;
+
+  if (!nom_produit || !prix || !image_base64) {
+    return res.status(400).json({ error: 'nom_produit, prix et image_base64 sont requis' });
+  }
+
+  try {
+    const image_url = await uploaderPhotoCatalogue(phone_number_id, image_base64, image_mime_type);
+
+    const { data, error } = await supabase.from('catalogue_produits').insert([{
+      phone_number_id,
+      nom_produit,
+      prix,
+      description: description || null,
+      image_url,
+    }]).select();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ produit: data[0] });
+  } catch (err) {
+    console.error('Erreur ajout produit catalogue:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/catalogue/:id', async (req, res) => {
+  const { id } = req.params;
+  const { nom_produit, prix, description, image_base64, image_mime_type } = req.body;
+
+  try {
+    const produitExistant = await getProduitCatalogue(id);
+    if (!produitExistant) return res.status(404).json({ error: 'Produit introuvable' });
+
+    const misAJour = {};
+    if (nom_produit !== undefined) misAJour.nom_produit = nom_produit;
+    if (prix !== undefined) misAJour.prix = prix;
+    if (description !== undefined) misAJour.description = description;
+
+    // Si une nouvelle photo est envoyée, on uploade la nouvelle puis on
+    // supprime l'ancienne du bucket (pour ne pas accumuler des photos orphelines).
+    if (image_base64) {
+      misAJour.image_url = await uploaderPhotoCatalogue(produitExistant.phone_number_id, image_base64, image_mime_type);
+      await supprimerPhotoCatalogue(produitExistant.image_url);
+    }
+
+    const { data, error } = await supabase
+      .from('catalogue_produits')
+      .update(misAJour)
+      .eq('id', id)
+      .select();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ produit: data[0] });
+  } catch (err) {
+    console.error('Erreur modification produit catalogue:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/catalogue/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const produitExistant = await getProduitCatalogue(id);
+    if (!produitExistant) return res.status(404).json({ error: 'Produit introuvable' });
+
+    await supprimerPhotoCatalogue(produitExistant.image_url);
+
+    const { error } = await supabase.from('catalogue_produits').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Erreur suppression produit catalogue:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
