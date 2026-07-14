@@ -481,6 +481,47 @@ async function sendBilanTemplate(fromPhoneNumberId, to, nomCommerce, periode, te
   return response.json();
 }
 
+/**
+ * Envoie une alerte (commande confirmée ou escalade) via le template Meta
+ * approuvé "alerte_marchand". Remplace l'ancien envoi en texte libre, qui
+ * échouait si le propriétaire n'avait pas écrit au bot dans les 24h.
+ */
+async function sendAlerteTemplate(fromPhoneNumberId, to, nomCommerce, texteAlerte) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'template',
+      template: {
+        name: 'alerte_marchand',
+        language: { code: 'fr' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nettoyerParametreTemplate(nomCommerce) },
+            { type: 'text', text: nettoyerParametreTemplate(texteAlerte) },
+          ],
+        }],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi template alerte Meta:', response.status, errText);
+    throw new Error(`Meta API (template alerte) a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
+}
+
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
 
 async function askClaude(history, systemPrompt) {
@@ -649,7 +690,7 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
     `Livraison souhaitée : ${detection.heure_livraison || 'non précisée'}\n\n` +
     `Pense à confirmer et organiser la livraison.`;
 
-  await sendWhatsAppMessage(merchant.phone_number_id, merchant.numero_proprietaire, texteAlerte);
+  await sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteAlerte);
   await saveClientProfile(sessionId, { derniere_commande_alertee: signatureNouvelle });
   await enregistrerCommande(merchant, from, detection);
   console.log(`Alerte commande envoyée pour ${merchant.nom_commerce} (client ${from})`);
@@ -775,7 +816,7 @@ async function detecterEtAlerterEscalade(sessionId, merchant, from, history, rep
     `Résumé : ${detection.resume || 'non précisé'}\n\n` +
     `Le bot a informé le client que vous seriez tenu au courant.`;
 
-  await sendWhatsAppMessage(merchant.phone_number_id, merchant.numero_proprietaire, texteAlerte);
+  await sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteAlerte);
   await saveClientProfile(sessionId, { derniere_escalade_alertee: signatureNouvelle });
   console.log(`Alerte escalade envoyée pour ${merchant.nom_commerce} (client ${from}) — ${libelle}`);
 }
