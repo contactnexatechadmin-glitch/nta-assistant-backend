@@ -1172,9 +1172,23 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    // Les webhooks Meta couvrent aussi les accusés de statut (envoyé/lu/livré),
-    // qui n'ont pas de champ "messages" — on les ignore silencieusement.
-    if (!message) return;
+    // Les webhooks Meta couvrent aussi les accusés de statut (envoyé/lu/livré/
+    // échoué), qui n'ont pas de champ "messages". On les logue (surtout les
+    // échecs) pour diagnostiquer les cas où Meta accepte l'envoi (200 OK) mais
+    // échoue à livrer ensuite silencieusement, sans qu'aucune erreur ne
+    // remonte à notre code au moment de l'envoi.
+    if (!message) {
+      const statut = value?.statuses?.[0];
+      if (statut) {
+        if (statut.status === 'failed') {
+          const erreur = statut.errors?.[0];
+          console.error(`🚨 Échec de livraison Meta — destinataire ${statut.recipient_id}, message ${statut.id} : ${erreur?.title || 'raison inconnue'} (code ${erreur?.code || '?'})`);
+        } else {
+          console.log(`Statut message ${statut.id} → ${statut.status} (destinataire ${statut.recipient_id})`);
+        }
+      }
+      return;
+    }
 
     // ID du numéro Meta qui a REÇU ce message — identifie le commerçant concerné.
     const phoneNumberId = value?.metadata?.phone_number_id;
