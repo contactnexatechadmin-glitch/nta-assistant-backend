@@ -626,6 +626,47 @@ async function sendAlerteTemplate(fromPhoneNumberId, to, nomCommerce, texteAlert
   return response.json();
 }
 
+// ─── IMAGES (RÉCEPTION PHOTO CLIENT + COMPARAISON CATALOGUE) ─────────────────
+//
+// Quand un client final envoie une photo (ex: capture d'un produit vu sur les
+// réseaux), Meta ne transmet qu'un media_id — il faut d'abord demander l'URL
+// réelle du fichier à l'API Graph, puis télécharger le fichier lui-même,
+// avant de pouvoir l'envoyer à Claude en vision.
+
+async function telechargerMediaMeta(mediaId) {
+  const infoRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
+  });
+  if (!infoRes.ok) {
+    throw new Error(`Erreur récupération info média Meta: ${infoRes.status}`);
+  }
+  const info = await infoRes.json();
+
+  const mediaRes = await fetch(info.url, {
+    headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
+  });
+  if (!mediaRes.ok) {
+    throw new Error(`Erreur téléchargement fichier média Meta: ${mediaRes.status}`);
+  }
+
+  const buffer = Buffer.from(await mediaRes.arrayBuffer());
+  return { base64: buffer.toString('base64'), mimeType: info.mime_type || 'image/jpeg' };
+}
+
+/**
+ * Télécharge une photo du catalogue (URL publique Supabase Storage) et la
+ * convertit en base64, pour l'envoyer à Claude en tant que photo de référence.
+ */
+async function urlPhotoVersBase64(url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Erreur téléchargement photo catalogue: ${res.status}`);
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const mimeType = res.headers.get('content-type') || 'image/jpeg';
+  return { base64: buffer.toString('base64'), mimeType };
+}
+
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
 
 async function askClaude(history, systemPrompt) {
@@ -648,6 +689,70 @@ async function askClaude(history, systemPrompt) {
   if (!response.ok) {
     const errText = await response.text();
     throw new Error(`Claude API a répondu ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  return data.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+}
+
+// Limite le nombre de photos catalogue envoyées à Claude par comparaison,
+// pour garder un temps de réponse raisonnable même si le catalogue grossit.
+const MAX_PRODUITS_COMPARAISON_VISION = 15;
+
+/**
+ * Envoie la photo du client à Claude, accompagnée des photos de référence du
+ * catalogue (nom + prix + variante en légende de chacune), pour une véritable
+ * comparaison image-à-image plutôt qu'une simple description textuelle.
+ */
+async function askClaudeAvecImage(history, systemPrompt, catalogue, imageClientBase64, imageClientMimeType) {
+  const produitsAComparer = (catalogue || []).slice(0, MAX_PRODUITS_COMPARAISON_VISION);
+  const blocsCatalogue = [];
+
+  if (produitsAComparer.length > 0) {
+    blocsCatalogue.push({ type: 'text', text: 'Voici les photos de référence du catalogue de la boutique, avec leur nom et prix exact juste après chacune :' });
+    for (const produit of produitsAComparer) {
+      try {
+        const { base64, mimeType } = await urlPhotoVersBase64(produit.image_url);
+        blocsCatalogue.push({ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } });
+        blocsCatalogue.push({ type: 'text', text: `↑ ${produit.nom_produit} → ${produit.prix}${produit.variante ? ' (' + produit.variante + ')' : ''}` });
+      } catch (err) {
+        console.error(`Erreur chargement photo catalogue pour comparaison (${produit.nom_produit}):`, err.message);
+      }
+    }
+  }
+
+  const instructionFinale = blocsCatalogue.length > 0
+    ? "Le client final vient d'envoyer la photo ci-dessous. Compare-la avec les photos du catalogue fournies plus haut et identifie le produit correspondant UNIQUEMENT si tu le reconnais avec un bon niveau de confiance. Réponds alors avec son nom exact et son prix exact tels que donnés en légende. Si aucune photo du catalogue ne correspond clairement, dis-le honnêtement au client et demande une précision (nom du produit, couleur, taille) plutôt que d'inventer une correspondance ou un prix."
+    : "Le client final vient d'envoyer une photo, mais aucune photo de référence n'est disponible dans le catalogue pour l'instant. Décris brièvement ce que tu vois de façon générale et demande au client de préciser le nom du produit qui l'intéresse, sans jamais inventer un prix ou une disponibilité.";
+
+  const messageUtilisateur = {
+    role: 'user',
+    content: [
+      ...blocsCatalogue,
+      { type: 'text', text: instructionFinale },
+      { type: 'image', source: { type: 'base64', media_type: imageClientMimeType, data: imageClientBase64 } },
+    ],
+  };
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'accept-encoding': 'identity',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [...history, messageUtilisateur],
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Claude API (vision) a répondu ${response.status}: ${errText}`);
   }
 
   const data = await response.json();
@@ -1390,8 +1495,23 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
 
     // ID du numéro Meta qui a REÇU ce message — identifie le commerçant concerné.
     const phoneNumberId = value?.metadata?.phone_number_id;
-    const incomingMsg = message.text?.body;
     const from = normaliserNumeroIvoirien(message.from);
+
+    // Les clients peuvent envoyer une photo (produit vu sur les réseaux) au
+    // lieu d'un texte. On télécharge alors la photo depuis Meta pour
+    // l'analyser en vision ; le texte sauvegardé sert de trace lisible dans
+    // l'historique (pas d'affichage d'image dans le transcript texte).
+    let incomingMsg = message.text?.body;
+    let imageClient = null;
+
+    if (message.type === 'image' && message.image?.id) {
+      try {
+        imageClient = await telechargerMediaMeta(message.image.id);
+      } catch (err) {
+        console.error('🚨 Erreur téléchargement photo client (Meta):', err.message);
+      }
+      incomingMsg = message.image.caption || '[Photo envoyée par le client]';
+    }
 
     if (!incomingMsg || !from || !phoneNumberId) return;
 
@@ -1435,8 +1555,18 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const ligneStatutTemps = formatDateHeureAbidjan();
     const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + catalogueLine + ligneStatutTemps;
 
-    // Réponse principale
-    const reply = await askClaude(history, systemPrompt);
+    // Réponse principale — vision si le client a envoyé une photo, sinon texte classique
+    let reply;
+    if (imageClient) {
+      try {
+        reply = await askClaudeAvecImage(history, systemPrompt, catalogue, imageClient.base64, imageClient.mimeType);
+      } catch (err) {
+        console.error('🚨 Erreur analyse vision de la photo client:', err.message);
+        reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
+      }
+    } else {
+      reply = await askClaude(history, systemPrompt);
+    }
     await saveMessageToSupabase(sessionId, 'assistant', reply);
 
     // Extraction et mise à jour du profil en arrière-plan (non bloquant —
