@@ -423,6 +423,21 @@ async function getCatalogueProduits(phoneNumberId) {
   return data || [];
 }
 
+/**
+ * Formate le catalogue produits d'un commerçant en une ligne de texte à
+ * injecter dans le system_prompt, remplaçant la saisie manuelle de la
+ * question 6 du formulaire. Format : "Nom → Prix (Variante)".
+ */
+function formatCatalogueForPrompt(produits) {
+  if (!produits || produits.length === 0) return '';
+
+  const lignes = produits
+    .map(p => `${p.nom_produit} → ${p.prix}${p.variante ? ' (' + p.variante + ')' : ''}`)
+    .join(' / ');
+
+  return `\n\n[Catalogue produits] ${lignes}`;
+}
+
 async function getProduitCatalogue(id) {
   const { data, error } = await supabase
     .from('catalogue_produits')
@@ -1262,7 +1277,7 @@ app.get('/merchants/:phone_number_id/catalogue', async (req, res) => {
 
 app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
   const { phone_number_id } = req.params;
-  const { nom_produit, prix, description, image_base64, image_mime_type } = req.body;
+  const { nom_produit, prix, variante, description, image_base64, image_mime_type } = req.body;
 
   if (!nom_produit || !prix || !image_base64) {
     return res.status(400).json({ error: 'nom_produit, prix et image_base64 sont requis' });
@@ -1275,6 +1290,7 @@ app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
       phone_number_id,
       nom_produit,
       prix,
+      variante: variante || null,
       description: description || null,
       image_url,
     }]).select();
@@ -1289,7 +1305,7 @@ app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
 
 app.patch('/catalogue/:id', async (req, res) => {
   const { id } = req.params;
-  const { nom_produit, prix, description, image_base64, image_mime_type } = req.body;
+  const { nom_produit, prix, variante, description, image_base64, image_mime_type } = req.body;
 
   try {
     const produitExistant = await getProduitCatalogue(id);
@@ -1298,6 +1314,7 @@ app.patch('/catalogue/:id', async (req, res) => {
     const misAJour = {};
     if (nom_produit !== undefined) misAJour.nom_produit = nom_produit;
     if (prix !== undefined) misAJour.prix = prix;
+    if (variante !== undefined) misAJour.variante = variante;
     if (description !== undefined) misAJour.description = description;
 
     // Si une nouvelle photo est envoyée, on uploade la nouvelle puis on
@@ -1404,17 +1421,19 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     await saveMessageToSupabase(sessionId, 'user', incomingMsg);
 
     // Récupération parallèle : historique + profil client
-    const [history, profile] = await Promise.all([
+    const [history, profile, catalogue] = await Promise.all([
       getHistoryFromSupabase(sessionId),
       getClientProfile(sessionId),
+      getCatalogueProduits(phoneNumberId),
     ]);
 
     // System prompt propre au commerçant (fallback sur le prompt générique
     // si jamais system_prompt est vide dans Supabase)
     const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
     const profileLine = formatProfileForPrompt(profile);
+    const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + catalogueLine + ligneStatutTemps;
 
     // Réponse principale
     const reply = await askClaude(history, systemPrompt);
