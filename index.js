@@ -349,65 +349,12 @@ async function getMerchantsActifs() {
   return data || [];
 }
 
-// ─── CATALOGUE PRODUITS (PHOTOS + VISION) ─────────────────────────────────────
+// ─── CATALOGUE PRODUITS (TEXTE RICHE, SANS PHOTO) ─────────────────────────────
 //
-// Permet à chaque commerçant d'avoir un catalogue de produits avec photo de
-// référence, stocké dans Supabase Storage (bucket "catalogue-produits", public)
-// et référencé dans la table `catalogue_produits`. Sert de base à la future
-// fonctionnalité de reconnaissance d'image (le bot compare la photo envoyée
-// par le client final aux photos de référence du catalogue).
-
-const NOM_BUCKET_CATALOGUE = 'catalogue-produits';
-
-/**
- * Déduit l'extension de fichier à partir du type MIME reçu du dashboard
- * (ex: "image/jpeg" → "jpg"). Retombe sur "jpg" par défaut si type inconnu.
- */
-function extensionDepuisMimeType(mimeType) {
-  const table = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
-  return table[mimeType] || 'jpg';
-}
-
-/**
- * Upload une image (reçue en base64 depuis le dashboard) vers Supabase
- * Storage, et retourne son URL publique. Le chemin de stockage est préfixé
- * par le phone_number_id du commerçant, pour garder les photos de chaque
- * commerçant isolées dans le bucket.
- */
-async function uploaderPhotoCatalogue(phoneNumberId, imageBase64, mimeType) {
-  const buffer = Buffer.from(imageBase64, 'base64');
-  const extension = extensionDepuisMimeType(mimeType);
-  const cheminFichier = `${phoneNumberId}/${Date.now()}-${crypto.randomUUID()}.${extension}`;
-
-  const { error } = await supabase.storage
-    .from(NOM_BUCKET_CATALOGUE)
-    .upload(cheminFichier, buffer, { contentType: mimeType || 'image/jpeg', upsert: false });
-
-  if (error) {
-    throw new Error(`Erreur upload photo catalogue: ${error.message}`);
-  }
-
-  const { data } = supabase.storage.from(NOM_BUCKET_CATALOGUE).getPublicUrl(cheminFichier);
-  return data.publicUrl;
-}
-
-/**
- * Supprime une photo du bucket à partir de son URL publique complète.
- * Extrait le chemin relatif (après "/catalogue-produits/") pour l'appel
- * de suppression Supabase, qui attend un chemin et non une URL.
- */
-async function supprimerPhotoCatalogue(imageUrl) {
-  if (!imageUrl) return;
-  const marqueur = `/${NOM_BUCKET_CATALOGUE}/`;
-  const index = imageUrl.indexOf(marqueur);
-  if (index === -1) return;
-
-  const cheminFichier = imageUrl.slice(index + marqueur.length);
-  const { error } = await supabase.storage.from(NOM_BUCKET_CATALOGUE).remove([cheminFichier]);
-  if (error) {
-    console.error('Erreur suppression photo catalogue (non bloquant):', error.message);
-  }
-}
+// Aucune image n'est stockée (ni Supabase Storage, ni Render). Chaque produit
+// est décrit en texte riche par le DG (champ `description`, "détails visuels"),
+// injecté intégralement dans le system_prompt à chaque message. Le champ
+// `en_rupture` permet de signaler une indisponibilité sans supprimer la fiche.
 
 async function getCatalogueProduits(phoneNumberId) {
   const { data, error } = await supabase
@@ -424,18 +371,24 @@ async function getCatalogueProduits(phoneNumberId) {
 }
 
 /**
- * Formate le catalogue produits d'un commerçant en une ligne de texte à
- * injecter dans le system_prompt, remplaçant la saisie manuelle de la
- * question 6 du formulaire. Format : "Nom → Prix (Variante)".
+ * Formate le catalogue produits d'un commerçant en texte riche à injecter
+ * dans le system_prompt. Chaque produit inclut ses détails visuels (pour la
+ * reconnaissance d'image) et son statut de stock.
  */
 function formatCatalogueForPrompt(produits) {
   if (!produits || produits.length === 0) return '';
 
-  const lignes = produits
-    .map(p => `${p.nom_produit} → ${p.prix}${p.variante ? ' (' + p.variante + ')' : ''}`)
-    .join(' / ');
+  const fiches = produits.map(p => {
+    const lignes = [
+      `Produit : ${p.nom_produit}${p.variante ? ' (' + p.variante + ')' : ''}`,
+      `Prix : ${p.prix}`,
+      `Détails visuels : ${p.description || 'non précisés'}`,
+      `Statut : ${p.en_rupture ? '[RUPTURE]' : '[EN STOCK]'}`,
+    ];
+    return lignes.join('\n');
+  }).join('\n\n');
 
-  return `\n\n[Catalogue produits] ${lignes}`;
+  return `\n\n[Catalogue produits]\n${fiches}`;
 }
 
 async function getProduitCatalogue(id) {
@@ -653,20 +606,6 @@ async function telechargerMediaMeta(mediaId) {
   return { base64: buffer.toString('base64'), mimeType: info.mime_type || 'image/jpeg' };
 }
 
-/**
- * Télécharge une photo du catalogue (URL publique Supabase Storage) et la
- * convertit en base64, pour l'envoyer à Claude en tant que photo de référence.
- */
-async function urlPhotoVersBase64(url) {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Erreur téléchargement photo catalogue: ${res.status}`);
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-  const mimeType = res.headers.get('content-type') || 'image/jpeg';
-  return { base64: buffer.toString('base64'), mimeType };
-}
-
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
 
 async function askClaude(history, systemPrompt) {
@@ -695,41 +634,25 @@ async function askClaude(history, systemPrompt) {
   return data.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
 }
 
-// Limite le nombre de photos catalogue envoyées à Claude par comparaison,
-// pour garder un temps de réponse raisonnable même si le catalogue grossit.
-const MAX_PRODUITS_COMPARAISON_VISION = 15;
-
 /**
- * Envoie la photo du client à Claude, accompagnée des photos de référence du
- * catalogue (nom + prix + variante en légende de chacune), pour une véritable
- * comparaison image-à-image plutôt qu'une simple description textuelle.
+ * Envoie UNIQUEMENT la photo du client à Claude (Haiku, rapide et économique).
+ * Le catalogue n'est plus envoyé en photos : il est déjà présent en texte
+ * riche dans systemPrompt (voir formatCatalogueForPrompt), ce qui rend le
+ * coût de cet appel indépendant de la taille du catalogue du commerçant.
  */
-async function askClaudeAvecImage(history, systemPrompt, catalogue, imageClientBase64, imageClientMimeType) {
-  const produitsAComparer = (catalogue || []).slice(0, MAX_PRODUITS_COMPARAISON_VISION);
-  const blocsCatalogue = [];
-
-  if (produitsAComparer.length > 0) {
-    blocsCatalogue.push({ type: 'text', text: 'Voici les photos de référence du catalogue de la boutique, avec leur nom et prix exact juste après chacune :' });
-    for (const produit of produitsAComparer) {
-      try {
-        const { base64, mimeType } = await urlPhotoVersBase64(produit.image_url);
-        blocsCatalogue.push({ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } });
-        blocsCatalogue.push({ type: 'text', text: `↑ ${produit.nom_produit} → ${produit.prix}${produit.variante ? ' (' + produit.variante + ')' : ''}` });
-      } catch (err) {
-        console.error(`Erreur chargement photo catalogue pour comparaison (${produit.nom_produit}):`, err.message);
-      }
-    }
-  }
-
-  const instructionFinale = blocsCatalogue.length > 0
-    ? "Le client final vient d'envoyer la photo ci-dessous. Compare-la avec les photos du catalogue fournies plus haut et identifie le produit correspondant UNIQUEMENT si tu le reconnais avec un bon niveau de confiance. Réponds alors avec son nom exact et son prix exact tels que donnés en légende. Si aucune photo du catalogue ne correspond clairement, dis-le honnêtement au client et demande une précision (nom du produit, couleur, taille) plutôt que d'inventer une correspondance ou un prix."
-    : "Le client final vient d'envoyer une photo, mais aucune photo de référence n'est disponible dans le catalogue pour l'instant. Décris brièvement ce que tu vois de façon générale et demande au client de préciser le nom du produit qui l'intéresse, sans jamais inventer un prix ou une disponibilité.";
+async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType) {
+  const instructionAnalyseImage =
+    "Le client final vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux). " +
+    "Analyse l'image envoyée par le client. Croise les informations visuelles et le texte éventuel visible sur l'image avec les \"Détails visuels\" de chaque produit fournis dans le catalogue texte de tes instructions. " +
+    "Si ça correspond clairement à un produit, réponds avec son nom, son prix et son statut exacts tels que donnés dans le catalogue. " +
+    "S'il y a un doute entre deux articles très similaires, pose une question de clarification au client plutôt que de deviner. " +
+    "Si l'article identifié porte le statut [RUPTURE], signale-le poliment au client et invite-le à regarder d'autres articles disponibles. " +
+    "Si rien ne correspond clairement dans le catalogue, dis-le honnêtement et demande une précision, sans jamais inventer un prix ou une disponibilité.";
 
   const messageUtilisateur = {
     role: 'user',
     content: [
-      ...blocsCatalogue,
-      { type: 'text', text: instructionFinale },
+      { type: 'text', text: instructionAnalyseImage },
       { type: 'image', source: { type: 'base64', media_type: imageClientMimeType, data: imageClientBase64 } },
     ],
   };
@@ -743,7 +666,7 @@ async function askClaudeAvecImage(history, systemPrompt, catalogue, imageClientB
       'accept-encoding': 'identity',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 500,
       system: systemPrompt,
       messages: [...history, messageUtilisateur],
@@ -1382,22 +1305,20 @@ app.get('/merchants/:phone_number_id/catalogue', async (req, res) => {
 
 app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
   const { phone_number_id } = req.params;
-  const { nom_produit, prix, variante, description, image_base64, image_mime_type } = req.body;
+  const { nom_produit, prix, variante, description, en_rupture } = req.body;
 
-  if (!nom_produit || !prix || !image_base64) {
-    return res.status(400).json({ error: 'nom_produit, prix et image_base64 sont requis' });
+  if (!nom_produit || !prix || !description) {
+    return res.status(400).json({ error: 'nom_produit, prix et description (détails visuels) sont requis' });
   }
 
   try {
-    const image_url = await uploaderPhotoCatalogue(phone_number_id, image_base64, image_mime_type);
-
     const { data, error } = await supabase.from('catalogue_produits').insert([{
       phone_number_id,
       nom_produit,
       prix,
       variante: variante || null,
-      description: description || null,
-      image_url,
+      description,
+      en_rupture: en_rupture === true,
     }]).select();
 
     if (error) return res.status(500).json({ error: error.message });
@@ -1410,7 +1331,7 @@ app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
 
 app.patch('/catalogue/:id', async (req, res) => {
   const { id } = req.params;
-  const { nom_produit, prix, variante, description, image_base64, image_mime_type } = req.body;
+  const { nom_produit, prix, variante, description, en_rupture } = req.body;
 
   try {
     const produitExistant = await getProduitCatalogue(id);
@@ -1421,13 +1342,7 @@ app.patch('/catalogue/:id', async (req, res) => {
     if (prix !== undefined) misAJour.prix = prix;
     if (variante !== undefined) misAJour.variante = variante;
     if (description !== undefined) misAJour.description = description;
-
-    // Si une nouvelle photo est envoyée, on uploade la nouvelle puis on
-    // supprime l'ancienne du bucket (pour ne pas accumuler des photos orphelines).
-    if (image_base64) {
-      misAJour.image_url = await uploaderPhotoCatalogue(produitExistant.phone_number_id, image_base64, image_mime_type);
-      await supprimerPhotoCatalogue(produitExistant.image_url);
-    }
+    if (en_rupture !== undefined) misAJour.en_rupture = en_rupture === true;
 
     const { data, error } = await supabase
       .from('catalogue_produits')
@@ -1449,8 +1364,6 @@ app.delete('/catalogue/:id', async (req, res) => {
   try {
     const produitExistant = await getProduitCatalogue(id);
     if (!produitExistant) return res.status(404).json({ error: 'Produit introuvable' });
-
-    await supprimerPhotoCatalogue(produitExistant.image_url);
 
     const { error } = await supabase.from('catalogue_produits').delete().eq('id', id);
     if (error) return res.status(500).json({ error: error.message });
@@ -1559,7 +1472,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     let reply;
     if (imageClient) {
       try {
-        reply = await askClaudeAvecImage(history, systemPrompt, catalogue, imageClient.base64, imageClient.mimeType);
+        reply = await askClaudeAvecImage(history, systemPrompt, imageClient.base64, imageClient.mimeType);
       } catch (err) {
         console.error('🚨 Erreur analyse vision de la photo client:', err.message);
         reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
