@@ -57,7 +57,8 @@ const REGLE_ESCALADE =
 
 const REGLE_CATALOGUE_TEMPS_REEL =
   "\n\nIMPORTANT - Fraîcheur du catalogue : le [Catalogue produits] fourni ci-dessous reflète l'état RÉEL et ACTUEL du stock, vérifié à l'instant même où tu reçois ce message. " +
-  "Il prime TOUJOURS sur tout ce qui a été dit plus tôt dans la conversation, y compris par toi-même. Si un article apparaît en [EN STOCK] maintenant, il est disponible — présente-le normalement et sans hésitation, MÊME si toi ou le client l'aviez évoqué en rupture plus tôt dans l'échange. Ne reste jamais bloqué sur une ancienne info de stock : le catalogue du dessous est la seule vérité à l'instant présent.";
+  "Il prime TOUJOURS sur tout ce qui a été dit plus tôt dans la conversation, y compris par toi-même. Si un article apparaît en [EN STOCK] maintenant, il est disponible — présente-le normalement et sans hésitation, MÊME si toi ou le client l'aviez évoqué en rupture plus tôt dans l'échange. Ne reste jamais bloqué sur une ancienne info de stock : le catalogue du dessous est la seule vérité à l'instant présent. " +
+  "IMPORTANT - Langage naturel du statut : les labels [EN STOCK] / [RUPTURE] sont un format INTERNE pour toi, jamais à répéter tels quels au client. Traduis-les toujours en langage humain, intégré dans la phrase : \"disponible\" ou \"malheureusement plus disponible\" (ou équivalent), jamais \"Statut : EN STOCK\" ni aucune ligne façon fiche d'inventaire.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -649,14 +650,26 @@ async function askClaude(history, systemPrompt) {
  * "client" collés d'affilée (le placeholder, puis l'image), ce qui le pousse
  * à s'ancrer sur d'anciens tours de la conversation au lieu de traiter cette
  * image comme la question actuelle du client.
+ *
+ * `legendeClient` porte le texte RÉEL éventuellement tapé par le client en
+ * légende de sa photo (ex: "Bonjour, vous avez ça ?"). Comme le placeholder
+ * a été retiré de l'historique, ce texte doit être réinjecté explicitement
+ * ici — sinon une salutation ou une question tapée avec la photo disparaît
+ * purement et simplement.
  */
-async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType) {
+async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType, legendeClient) {
+  const ligneLegende = legendeClient
+    ? `Le client a envoyé ce message avec sa photo : "${legendeClient}". Réponds-y d'abord (une salutation ou une question mérite toujours une réponse) avant de parler du produit — ne l'ignore jamais.`
+    : "Le client n'a pas ajouté de texte à sa photo.";
+
   const instructionAnalyseImage =
-    "Le client final vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux). " +
-    "Analyse l'image envoyée par le client. Croise les informations visuelles et le texte éventuel visible sur l'image avec les \"Détails visuels\" de chaque produit fournis dans le catalogue texte de tes instructions. " +
-    "Si ça correspond clairement à un produit, réponds avec son nom, son prix et son statut exacts tels que donnés dans le catalogue. " +
+    "Le client vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux). " + ligneLegende + " " +
+    "Identifie le produit en croisant discrètement l'image avec les \"Détails visuels\" de chaque produit de ton catalogue. " +
+    "Présente-le directement et avec assurance, comme un vendeur qui connaît son stock par cœur — ne dis JAMAIS que tu \"reconnais\", \"identifies\" ou \"analyses\" l'image à voix haute, ça sonne comme si tu débutais dans ta propre boutique. " +
+    "Annonce la disponibilité en langage humain et naturel, intégré dans la phrase : \"disponible\" si le produit est en stock, \"malheureusement plus disponible\" (ou une formulation équivalente) sinon. N'écris JAMAIS \"Statut :\" suivi d'un label technique comme \"EN STOCK\" ou \"RUPTURE\" — ce n'est pas un vendeur, c'est un robot d'inventaire qui parle comme ça. " +
+    "Ne rajoute pas non plus d'annonce artificielle du type \"Bonne nouvelle —\" : donne l'info directement, avec un ton chaleureux mais sobre. " +
     "S'il y a un doute entre deux articles très similaires, pose une question de clarification au client plutôt que de deviner. " +
-    "Si l'article identifié porte le statut [RUPTURE], signale-le poliment au client et invite-le à regarder d'autres articles disponibles. " +
+    "Si l'article est indisponible, signale-le poliment et invite le client à regarder d'autres articles disponibles. " +
     "Si rien ne correspond clairement dans le catalogue, dis-le honnêtement et demande une précision, sans jamais inventer un prix ou une disponibilité.";
 
   const messageUtilisateur = {
@@ -1490,7 +1503,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       // On retire donc ce placeholder avant l'appel vision.
       const historyPourVision = history.slice(0, -1);
       try {
-        reply = await askClaudeAvecImage(historyPourVision, systemPrompt, imageClient.base64, imageClient.mimeType);
+        reply = await askClaudeAvecImage(historyPourVision, systemPrompt, imageClient.base64, imageClient.mimeType, message.image.caption || '');
       } catch (err) {
         console.error('🚨 Erreur analyse vision de la photo client:', err.message);
         reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
