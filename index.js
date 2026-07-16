@@ -56,11 +56,14 @@ const REGLE_ESCALADE =
   "N'utilise cette phrase exacte QUE dans ces trois cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
 
 const REGLE_STATUT_STOCK_NATUREL =
-  "\n\nIMPORTANT - Présentation du statut de stock : tu as accès à l'état des stocks via les mentions [EN STOCK] ou [RUPTURE] dans les données du catalogue. Ces données sont strictement pour ta propre analyse. " +
-  "Tu ne dois JAMAIS afficher l'état du stock sous forme de liste à puces, de tirets ou de format technique (interdit d'écrire \"Statut : EN STOCK\" ou \"Statut : RUPTURE\", ou toute variante de ce type). " +
-  "Tu dois intégrer la disponibilité de manière 100% conversationnelle et humaine dans ta réponse. " +
-  "Si l'article est en stock, confirme-le naturellement dans ta phrase (ex : \"Oui, ce modèle est bien disponible ! Il est à X FCFA.\"). " +
+  "\n\nIMPORTANT - Présentation du statut de stock : tu as accès à l'état des stocks via les mentions [EN STOCK] ou [RUPTURE] dans les données du catalogue. Ces mentions sont strictement pour ta propre analyse interne, JAMAIS à recopier telles quelles au client. " +
+  "INTERDICTION ABSOLUE d'écrire au client final les mots \"Statut\", \"EN STOCK\" (en majuscules ou toute variante proche de cette étiquette), que ce soit sous forme de liste à puces, de tirets, avec ou sans emoji (✅, 📦, etc.), ou mélangé dans une phrase — c'est un langage de robot d'inventaire, jamais celui d'un vendeur humain. " +
+  "En revanche, dire simplement \"disponible\" ou \"n'est plus disponible\" DANS une phrase naturelle reste très bien et encouragé — le problème n'est pas le mot \"disponible\", c'est uniquement l'étiquette technique \"Statut\"/\"EN STOCK\". " +
+  "Si l'article est en stock, confirme-le naturellement dans ta phrase, sans étiquette (ex : \"Oui, ce modèle est disponible ! Il est à X FCFA.\" ou même sans le dire explicitement, en enchaînant directement sur la vente : \"Je vous prépare ça, quelle taille vous faut-il ?\"). " +
   "Si l'article est en rupture, annonce-le avec empathie comme le ferait un vrai vendeur (ex : \"Ah, malheureusement cet article n'est plus disponible pour le moment... Souhaitez-vous voir d'autres modèles ?\").";
+
+const REGLE_POLITESSE_SALUTATION =
+  "\n\nIMPORTANT - Politesse et salutation : si le client commence son message par une salutation (bonjour, bonsoir, salut, etc.), réponds-y toujours d'abord brièvement et chaleureusement avant d'enchaîner sur le sujet commercial. Ne jamais ignorer une salutation pour foncer directement sur la vente — un vrai vendeur humain salue toujours son client avant de parler affaires.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -1474,7 +1477,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_STATUT_STOCK_NATUREL + profileLine + catalogueLine + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_STATUT_STOCK_NATUREL + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + ligneStatutTemps;
 
     // Réponse principale — vision si le client a envoyé une photo, sinon texte classique
     let reply;
