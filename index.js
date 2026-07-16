@@ -55,15 +55,9 @@ const REGLE_ESCALADE =
   "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
   "N'utilise cette phrase exacte QUE dans ces trois cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
 
-const REGLE_STATUT_STOCK_NATUREL =
-  "\n\nIMPORTANT - Présentation du statut de stock : tu as accès à l'état des stocks via les mentions [EN STOCK] ou [RUPTURE] dans les données du catalogue. Ces mentions sont strictement pour ta propre analyse interne, JAMAIS à recopier telles quelles au client. " +
-  "INTERDICTION ABSOLUE d'écrire au client final les mots \"Statut\", \"EN STOCK\" (en majuscules ou toute variante proche de cette étiquette), que ce soit sous forme de liste à puces, de tirets, avec ou sans emoji (✅, 📦, etc.), ou mélangé dans une phrase — c'est un langage de robot d'inventaire, jamais celui d'un vendeur humain. " +
-  "En revanche, dire simplement \"disponible\" ou \"n'est plus disponible\" DANS une phrase naturelle reste très bien et encouragé — le problème n'est pas le mot \"disponible\", c'est uniquement l'étiquette technique \"Statut\"/\"EN STOCK\". " +
-  "Si l'article est en stock, confirme-le naturellement dans ta phrase, sans étiquette (ex : \"Oui, ce modèle est disponible ! Il est à X FCFA.\" ou même sans le dire explicitement, en enchaînant directement sur la vente : \"Je vous prépare ça, quelle taille vous faut-il ?\"). " +
-  "Si l'article est en rupture, annonce-le avec empathie comme le ferait un vrai vendeur (ex : \"Ah, malheureusement cet article n'est plus disponible pour le moment... Souhaitez-vous voir d'autres modèles ?\").";
-
-const REGLE_POLITESSE_SALUTATION =
-  "\n\nIMPORTANT - Politesse et salutation : si le client commence son message par une salutation (bonjour, bonsoir, salut, etc.), réponds-y toujours d'abord brièvement et chaleureusement avant d'enchaîner sur le sujet commercial. Ne jamais ignorer une salutation pour foncer directement sur la vente — un vrai vendeur humain salue toujours son client avant de parler affaires.";
+const REGLE_CATALOGUE_TEMPS_REEL =
+  "\n\nIMPORTANT - Fraîcheur du catalogue : le [Catalogue produits] fourni ci-dessous reflète l'état RÉEL et ACTUEL du stock, vérifié à l'instant même où tu reçois ce message. " +
+  "Il prime TOUJOURS sur tout ce qui a été dit plus tôt dans la conversation, y compris par toi-même. Si un article apparaît en [EN STOCK] maintenant, il est disponible — présente-le normalement et sans hésitation, MÊME si toi ou le client l'aviez évoqué en rupture plus tôt dans l'échange. Ne reste jamais bloqué sur une ancienne info de stock : le catalogue du dessous est la seule vérité à l'instant présent.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -649,13 +643,18 @@ async function askClaude(history, systemPrompt) {
  * Le catalogue n'est plus envoyé en photos : il est déjà présent en texte
  * riche dans systemPrompt (voir formatCatalogueForPrompt), ce qui rend le
  * coût de cet appel indépendant de la taille du catalogue du commerçant.
+ *
+ * IMPORTANT : `history` reçu ici doit déjà EXCLURE le placeholder texte du
+ * message photo en cours (voir le webhook) — sinon Claude reçoit deux tours
+ * "client" collés d'affilée (le placeholder, puis l'image), ce qui le pousse
+ * à s'ancrer sur d'anciens tours de la conversation au lieu de traiter cette
+ * image comme la question actuelle du client.
  */
 async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType) {
   const instructionAnalyseImage =
     "Le client final vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux). " +
     "Analyse l'image envoyée par le client. Croise les informations visuelles et le texte éventuel visible sur l'image avec les \"Détails visuels\" de chaque produit fournis dans le catalogue texte de tes instructions. " +
     "Si ça correspond clairement à un produit, réponds avec son nom, son prix et son statut exacts tels que donnés dans le catalogue. " +
-    "IMPORTANT - Ton naturel de propriétaire : tu es le vendeur de CETTE boutique, tu connais ton propre stock par cœur — tu ne \"reconnais\" pas un produit comme le ferait un outil externe d'identification. N'utilise JAMAIS de formulation du type \"je reconnais\", \"je pense reconnaître\", \"il me semble que c'est\", ou toute autre expression qui laisse penser que tu identifies un objet inconnu. Parle-en directement et naturellement, comme un commerçant qui regarde une photo de son propre article (ex : \"Ah oui, la veste de smoking croisée blanche et noire !\" plutôt que \"Je reconnais cette veste...\"). " +
     "S'il y a un doute entre deux articles très similaires, pose une question de clarification au client plutôt que de deviner. " +
     "Si l'article identifié porte le statut [RUPTURE], signale-le poliment au client et invite-le à regarder d'autres articles disponibles. " +
     "Si rien ne correspond clairement dans le catalogue, dis-le honnêtement et demande une précision, sans jamais inventer un prix ou une disponibilité.";
@@ -1477,13 +1476,21 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_STATUT_STOCK_NATUREL + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + ligneStatutTemps;
 
     // Réponse principale — vision si le client a envoyé une photo, sinon texte classique
     let reply;
     if (imageClient) {
+      // Le message "user" qu'on vient de sauvegarder ci-dessus (placeholder
+      // "[Photo envoyée par le client]") est déjà le dernier élément de
+      // `history`. askClaudeAvecImage rajoute son propre tour "user" (la
+      // vraie image) : si on lui passait `history` tel quel, Claude recevrait
+      // deux tours "client" collés d'affilée, et s'ancrerait sur d'anciens
+      // échanges au lieu de traiter cette photo comme la question actuelle.
+      // On retire donc ce placeholder avant l'appel vision.
+      const historyPourVision = history.slice(0, -1);
       try {
-        reply = await askClaudeAvecImage(history, systemPrompt, imageClient.base64, imageClient.mimeType);
+        reply = await askClaudeAvecImage(historyPourVision, systemPrompt, imageClient.base64, imageClient.mimeType);
       } catch (err) {
         console.error('🚨 Erreur analyse vision de la photo client:', err.message);
         reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
