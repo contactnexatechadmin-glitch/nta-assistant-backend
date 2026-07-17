@@ -71,7 +71,8 @@ const REGLE_STATUT_STOCK_NATUREL =
   "Si l'article est en rupture, annonce-le avec empathie comme le ferait un vrai vendeur (ex : \"Ah, malheureusement cet article n'est plus disponible pour le moment... Souhaitez-vous voir d'autres modèles ?\") — c'est le SEUL cas où la disponibilité doit être mentionnée.";
 
 const REGLE_POLITESSE_SALUTATION =
-  "\n\nIMPORTANT - Politesse et salutation : si le client commence son message par une salutation (bonjour, bonsoir, salut, etc.), réponds-y toujours d'abord brièvement et chaleureusement avant d'enchaîner sur le sujet commercial. Ne jamais ignorer une salutation pour foncer directement sur la vente — un vrai vendeur humain salue toujours son client avant de parler affaires.";
+  "\n\nIMPORTANT - Politesse et salutation : si le message du client contient une salutation (bonjour, bonsoir, salut, etc.), réponds-y TOUJOURS brièvement et chaleureusement avant d'enchaîner sur le sujet commercial — SANS AUCUNE EXCEPTION. " +
+  "Cette règle s'applique même si le client salue plusieurs fois dans la même conversation (le client est roi, on ne se lasse jamais de lui répondre poliment), et même si le message contient aussi une photo ou une demande commerciale en même temps. Ne jamais ignorer une salutation pour foncer directement sur la vente — un vrai vendeur humain salue toujours son client avant de parler affaires.";
 
 const REGLE_PRIORITE_CATALOGUE_TEMPS_REEL =
   "\n\nIMPORTANT - Autorité absolue de la base de données temps réel : les informations contenues dans la balise <base_de_donnees_temps_reel> représentent la vérité absolue à la seconde près. Cette balise a autorité totale sur tout l'historique de la conversation. " +
@@ -663,10 +664,10 @@ async function askClaude(history, systemPrompt) {
  * riche dans systemPrompt (voir formatCatalogueForPrompt), ce qui rend le
  * coût de cet appel indépendant de la taille du catalogue du commerçant.
  */
-async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType) {
+async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType, texteClient) {
   const instructionAnalyseImage =
-    "Le client final vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux). " +
-    "Analyse l'image envoyée par le client. Croise les informations visuelles et le texte éventuel visible sur l'image avec les \"Détails visuels\" de chaque produit fournis dans le catalogue texte de tes instructions. " +
+    "Le client final vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux), accompagnée de ce message écrit par le client : \"" + (texteClient || '(aucun texte, seulement la photo)') + "\". " +
+    "Réponds d'abord normalement à ce message écrit (ex : si le client salue, réponds à sa salutation avant toute chose) puis analyse l'image envoyée. Croise les informations visuelles et le texte éventuel visible sur l'image avec les \"Détails visuels\" de chaque produit fournis dans le catalogue texte de tes instructions. " +
     "Si ça correspond clairement à un produit, réponds avec son nom et son prix exacts tels que donnés dans le catalogue. " +
     "IMPORTANT - Ne recopie JAMAIS les \"Détails visuels\" du catalogue dans ta réponse au client (ex : ne décris pas la coupe, le col, les motifs, les finitions, etc.) — ces détails servent UNIQUEMENT à ta propre reconnaissance interne de l'image, le client voit déjà sa photo, il n'a pas besoin qu'on la lui décrive. Réponds simplement avec le nom du produit, sans description visuelle. " +
     "IMPORTANT - Disponibilité : n'annonce JAMAIS explicitement qu'un article \"est disponible\" ou \"est en stock\" quand c'est effectivement le cas — le client écrit déjà en pensant que c'est disponible, le répéter est inutile et alourdit le message. Enchaîne directement sur la vente (prix, taille, commande). Mentionne la disponibilité UNIQUEMENT dans le cas contraire, quand l'article est en rupture. " +
@@ -1443,6 +1444,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     // l'historique (pas d'affichage d'image dans le transcript texte).
     let incomingMsg = message.text?.body;
     let imageClient = null;
+    let legendeClient = null;
 
     if (message.type === 'image' && message.image?.id) {
       try {
@@ -1450,7 +1452,8 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       } catch (err) {
         console.error('🚨 Erreur téléchargement photo client (Meta):', err.message);
       }
-      incomingMsg = message.image.caption || '[Photo envoyée par le client]';
+      legendeClient = message.image.caption || null;
+      incomingMsg = legendeClient || '[Photo envoyée par le client]';
     }
 
     if (!incomingMsg || !from || !phoneNumberId) return;
@@ -1510,7 +1513,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
         // ET l'image du même message à la suite — deux tours "client" collés,
         // ce qui le perturbe (il ignore alors la vraie question, ex: salutation).
         const historiquePourVision = historiquePourAppel.slice(0, -1);
-        reply = await askClaudeAvecImage(historiquePourVision, systemPrompt, imageClient.base64, imageClient.mimeType);
+        reply = await askClaudeAvecImage(historiquePourVision, systemPrompt, imageClient.base64, imageClient.mimeType, legendeClient);
       } catch (err) {
         console.error('🚨 Erreur analyse vision de la photo client:', err.message);
         reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
