@@ -33,6 +33,8 @@ const MESSAGE_ACCES_COUPE =
 // Augmenté à 20 messages (suffisant pour tout échange en cours, économique en tokens)
 const MAX_HISTORY = 20;
 
+const MAX_HISTORY_ENVOYE_A_CLAUDE = 10;
+
 const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
 
@@ -55,9 +57,14 @@ const REGLE_ESCALADE =
   "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
   "N'utilise cette phrase exacte QUE dans ces trois cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
 
+const REGLE_POLITESSE_SALUTATION =
+  "\n\nIMPORTANT - Politesse et salutation : si le message du client contient une salutation (bonjour, bonsoir, salut, etc.), réponds-y TOUJOURS brièvement et chaleureusement avant d'enchaîner sur le sujet commercial — SANS AUCUNE EXCEPTION. " +
+  "Cette règle s'applique même si le client salue plusieurs fois dans la même conversation, et même si le message contient aussi une photo ou une demande commerciale en même temps. Ne jamais ignorer une salutation pour foncer directement sur la vente.";
+
 const REGLE_CATALOGUE_TEMPS_REEL =
-  "\n\nIMPORTANT - Fraîcheur du catalogue : le [Catalogue produits] fourni ci-dessous reflète l'état RÉEL et ACTUEL du stock, vérifié à l'instant même où tu reçois ce message. " +
-  "Il prime TOUJOURS sur tout ce qui a été dit plus tôt dans la conversation, y compris par toi-même. Si un article apparaît en [EN STOCK] maintenant, il est disponible — présente-le normalement et sans hésitation, MÊME si toi ou le client l'aviez évoqué en rupture plus tôt dans l'échange. Ne reste jamais bloqué sur une ancienne info de stock : le catalogue du dessous est la seule vérité à l'instant présent. " +
+  "\n\nIMPORTANT - Autorité absolue de la base de données temps réel : les informations contenues dans la balise <base_de_donnees_temps_reel> représentent la vérité absolue à la seconde près. Cette balise a autorité totale sur tout l'historique de la conversation. " +
+  "Si un article est marqué [EN STOCK] dans cette balise, tu dois le proposer normalement au client, MÊME SI tu as affirmé le contraire dans tes messages précédents de cette même conversation. Si un article est marqué [RUPTURE] dans cette balise, il est indisponible MÊME SI tu as dit le contraire avant. " +
+  "Ne traite jamais une répétition dans l'historique comme une preuve de vérité : seule la balise <base_de_donnees_temps_reel> du message actuel compte, elle est régénérée à chaque message et reflète l'état réel actuel du stock. " +
   "IMPORTANT - Langage naturel du statut : les labels [EN STOCK] / [RUPTURE] sont un format INTERNE pour toi, jamais à répéter tels quels au client. Traduis-les toujours en langage humain, intégré dans la phrase : \"disponible\" ou \"malheureusement plus disponible\" (ou équivalent), jamais \"Statut : EN STOCK\" ni aucune ligne façon fiche d'inventaire.";
 
 const REGLE_ALTERNATIVE_RUPTURE =
@@ -403,7 +410,7 @@ function formatCatalogueForPrompt(produits) {
     return lignes.join('\n');
   }).join('\n\n');
 
-  return `\n\n[Catalogue produits]\n${fiches}`;
+  return `\n\n<base_de_donnees_temps_reel>\n${fiches}\n</base_de_donnees_temps_reel>`;
 }
 
 async function getProduitCatalogue(id) {
@@ -1602,7 +1609,9 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + ligneStatutTemps;
+
+    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
 
     // Réponse principale — vision si le client a envoyé une photo, sinon texte classique
     let replyBrut;
@@ -1614,7 +1623,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       // deux tours "client" collés d'affilée, et s'ancrerait sur d'anciens
       // échanges au lieu de traiter cette photo comme la question actuelle.
       // On retire donc ce placeholder avant l'appel vision.
-      const historyPourVision = history.slice(0, -1);
+      const historyPourVision = historiquePourAppel.slice(0, -1);
       try {
         replyBrut = await askClaudeAvecImage(historyPourVision, systemPrompt, imageClient.base64, imageClient.mimeType, message.image.caption || '');
       } catch (err) {
@@ -1622,7 +1631,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
         replyBrut = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
       }
     } else {
-      replyBrut = await askClaude(history, systemPrompt);
+      replyBrut = await askClaude(historiquePourAppel, systemPrompt);
     }
     // Retire le tag technique PHOTO_PRODUIT (invisible pour le client) avant
     // toute sauvegarde ou envoi — voir REGLE_PHOTO_PRODUIT.
