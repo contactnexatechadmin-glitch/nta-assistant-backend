@@ -69,8 +69,9 @@ const REGLE_CATALOGUE_TEMPS_REEL =
 
 const REGLE_ALTERNATIVE_RUPTURE =
   "\n\nIMPORTANT - Rebond commercial sur rupture de stock : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue), ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
-  "Choisis UNE SEULE alternative précise — la plus proche en catégorie de produit et en prix — et mets-la en avant clairement dans une vraie phrase commerciale naturelle et chaleureuse (jamais un dump brut du champ \"Détails visuels\", reformule toujours). " +
-  "Reste sur cette unique alternative nommée, jamais une liste.";
+  "RÈGLE STRICTE ET ABSOLUE : ton message final ne doit citer le NOM que d'UN SEUL autre article, jamais deux, jamais trois — même si plusieurs articles similaires (même catégorie, ex: plusieurs vestes ou plusieurs robes) sont disponibles dans le catalogue. Choisir entre plusieurs candidats n'est jamais une raison de les citer tous : sélectionne le plus proche en catégorie et en prix, et NE MENTIONNE QUE CELUI-LÀ, par son nom exact. " +
+  "Mets cette unique alternative en avant clairement dans une vraie phrase commerciale naturelle et chaleureuse (jamais un dump brut du champ \"Détails visuels\", reformule toujours). " +
+  "Si le client demande ensuite à voir d'autres options, tu peux alors en proposer une deuxième différente — mais jamais plus d'une nouvelle alternative par message, jamais une liste groupée.";
 
 const REGLE_PHOTO_PRODUIT =
   "\n\nIMPORTANT - Tag photo produit : quand — et UNIQUEMENT quand — tu viens de recommander UNE SEULE alternative précise suite à une rupture de stock (voir règle ci-dessus), termine ta réponse par une ligne séparée, exactement au format : PHOTO_PRODUIT: NomExactDuProduit — en reprenant le nom EXACT tel qu'il apparaît après \"Produit :\" dans le catalogue ci-dessous. " +
