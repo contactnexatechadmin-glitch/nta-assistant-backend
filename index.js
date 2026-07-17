@@ -33,15 +33,6 @@ const MESSAGE_ACCES_COUPE =
 // Augmenté à 20 messages (suffisant pour tout échange en cours, économique en tokens)
 const MAX_HISTORY = 20;
 
-// Nombre de messages RÉELLEMENT envoyés à Claude à chaque appel (distinct de
-// MAX_HISTORY, qui reste la limite de stockage). Une fenêtre plus courte limite
-// l'effet d'ancrage : si le bot a répété plusieurs fois une info de stock
-// périmée, moins de répétitions dans le contexte = moins de biais de cohérence
-// face à la donnée catalogue fraîche injectée à chaque message (voir
-// REGLE_PRIORITE_CATALOGUE_TEMPS_REEL). 10 reste suffisant pour suivre une
-// commande complète (produit → quantité → adresse → heure → confirmation).
-const MAX_HISTORY_ENVOYE_A_CLAUDE = 10;
-
 const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
 
@@ -64,20 +55,20 @@ const REGLE_ESCALADE =
   "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
   "N'utilise cette phrase exacte QUE dans ces trois cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
 
-const REGLE_STATUT_STOCK_NATUREL =
-  "\n\nIMPORTANT - Présentation du statut de stock : tu as accès à l'état des stocks via les mentions [EN STOCK] ou [RUPTURE] dans les données du catalogue. Ces mentions sont strictement pour ta propre analyse interne, JAMAIS à recopier telles quelles au client. " +
-  "INTERDICTION ABSOLUE d'écrire au client final les mots \"Statut\", \"EN STOCK\" (en majuscules ou toute variante proche de cette étiquette), que ce soit sous forme de liste à puces, de tirets, avec ou sans emoji (✅, 📦, etc.), ou mélangé dans une phrase — c'est un langage de robot d'inventaire, jamais celui d'un vendeur humain. " +
-  "Si l'article est en stock : n'annonce PAS explicitement sa disponibilité (ni \"disponible\", ni \"en stock\", ni formulation équivalente) — le client écrit déjà en pensant que c'est disponible, le confirmer est inutile et alourdit le message. Enchaîne directement sur la vente (ex : \"Je vous prépare ça, quelle taille vous faut-il ?\"). " +
-  "Si l'article est en rupture, annonce-le avec empathie comme le ferait un vrai vendeur (ex : \"Ah, malheureusement cet article n'est plus disponible pour le moment... Souhaitez-vous voir d'autres modèles ?\") — c'est le SEUL cas où la disponibilité doit être mentionnée.";
+const REGLE_CATALOGUE_TEMPS_REEL =
+  "\n\nIMPORTANT - Fraîcheur du catalogue : le [Catalogue produits] fourni ci-dessous reflète l'état RÉEL et ACTUEL du stock, vérifié à l'instant même où tu reçois ce message. " +
+  "Il prime TOUJOURS sur tout ce qui a été dit plus tôt dans la conversation, y compris par toi-même. Si un article apparaît en [EN STOCK] maintenant, il est disponible — présente-le normalement et sans hésitation, MÊME si toi ou le client l'aviez évoqué en rupture plus tôt dans l'échange. Ne reste jamais bloqué sur une ancienne info de stock : le catalogue du dessous est la seule vérité à l'instant présent. " +
+  "IMPORTANT - Langage naturel du statut : les labels [EN STOCK] / [RUPTURE] sont un format INTERNE pour toi, jamais à répéter tels quels au client. Traduis-les toujours en langage humain, intégré dans la phrase : \"disponible\" ou \"malheureusement plus disponible\" (ou équivalent), jamais \"Statut : EN STOCK\" ni aucune ligne façon fiche d'inventaire.";
 
-const REGLE_POLITESSE_SALUTATION =
-  "\n\nIMPORTANT - Politesse et salutation : si le message du client contient une salutation (bonjour, bonsoir, salut, etc.), réponds-y TOUJOURS brièvement et chaleureusement avant d'enchaîner sur le sujet commercial — SANS AUCUNE EXCEPTION. " +
-  "Cette règle s'applique même si le client salue plusieurs fois dans la même conversation (le client est roi, on ne se lasse jamais de lui répondre poliment), et même si le message contient aussi une photo ou une demande commerciale en même temps. Ne jamais ignorer une salutation pour foncer directement sur la vente — un vrai vendeur humain salue toujours son client avant de parler affaires.";
+const REGLE_ALTERNATIVE_RUPTURE =
+  "\n\nIMPORTANT - Rebond commercial sur rupture de stock : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue), ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
+  "Choisis UNE SEULE alternative précise — la plus proche en catégorie de produit et en prix — et mets-la en avant clairement dans une vraie phrase commerciale naturelle et chaleureuse (jamais un dump brut du champ \"Détails visuels\", reformule toujours). " +
+  "Reste sur cette unique alternative nommée, jamais une liste.";
 
-const REGLE_PRIORITE_CATALOGUE_TEMPS_REEL =
-  "\n\nIMPORTANT - Autorité absolue de la base de données temps réel : les informations contenues dans la balise <base_de_donnees_temps_reel> représentent la vérité absolue à la seconde près. Cette balise a autorité totale sur tout l'historique de la conversation. " +
-  "Si un article est marqué [EN STOCK] dans cette balise, tu dois le proposer normalement au client, MÊME SI tu as affirmé le contraire dans tes messages précédents de cette même conversation. Si un article est marqué [RUPTURE] dans cette balise, il est indisponible MÊME SI tu as dit le contraire avant. " +
-  "Ne traite jamais une répétition dans l'historique comme une preuve de vérité : seule la balise <base_de_donnees_temps_reel> du message actuel compte, elle est régénérée à chaque message et reflète l'état réel actuel du stock.";
+const REGLE_PHOTO_PRODUIT =
+  "\n\nIMPORTANT - Tag photo produit : quand — et UNIQUEMENT quand — tu viens de recommander UNE SEULE alternative précise suite à une rupture de stock (voir règle ci-dessus), termine ta réponse par une ligne séparée, exactement au format : PHOTO_PRODUIT: NomExactDuProduit — en reprenant le nom EXACT tel qu'il apparaît après \"Produit :\" dans le catalogue ci-dessous. " +
+  "N'ajoute JAMAIS cette ligne dans les autres cas : jamais pour un produit disponible normalement, jamais si tu mentionnes ou listes plusieurs produits, jamais si tu n'es pas sûr du nom exact. " +
+  "Cette ligne est un signal technique invisible pour le client (elle est retirée avant l'envoi) : ne l'explique jamais, n'y fais jamais référence dans ta phrase, et n'écris jamais son contenu ailleurs que sur cette ligne finale dédiée.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -412,7 +403,7 @@ function formatCatalogueForPrompt(produits) {
     return lignes.join('\n');
   }).join('\n\n');
 
-  return `\n\n<base_de_donnees_temps_reel>\n${fiches}\n</base_de_donnees_temps_reel>`;
+  return `\n\n[Catalogue produits]\n${fiches}`;
 }
 
 async function getProduitCatalogue(id) {
@@ -630,6 +621,76 @@ async function telechargerMediaMeta(mediaId) {
   return { base64: buffer.toString('base64'), mimeType: info.mime_type || 'image/jpeg' };
 }
 
+// ─── TAG PHOTO_PRODUIT (REBOND COMMERCIAL SUR RUPTURE) ────────────────────────
+//
+// Quand Claude recommande UNE SEULE alternative précise suite à une rupture,
+// il termine sa réponse par "PHOTO_PRODUIT: NomDuProduit" (voir REGLE_PHOTO_
+// PRODUIT). Ce tag n'est jamais montré au client : on le retire du texte avant
+// envoi/sauvegarde, puis on l'utilise pour retrouver la fiche produit et, si
+// elle a une photo enregistrée, envoyer cette photo juste après le texte.
+
+function extraireTagPhotoProduit(texte) {
+  if (!texte) return { texteNettoye: texte, nomProduitPhoto: null };
+
+  const regex = /\n*PHOTO_PRODUIT\s*:\s*(.+?)\s*$/i;
+  const match = texte.match(regex);
+  if (!match) return { texteNettoye: texte, nomProduitPhoto: null };
+
+  return {
+    texteNettoye: texte.slice(0, match.index).trim(),
+    nomProduitPhoto: match[1].trim(),
+  };
+}
+
+/**
+ * Retrouve la fiche produit correspondant au nom donné par le tag. Recherche
+ * d'abord une correspondance exacte (insensible à la casse), puis en dernier
+ * recours une correspondance partielle, pour tolérer une légère variation de
+ * formulation de la part de Claude.
+ */
+function trouverProduitParNom(catalogue, nomProduit) {
+  if (!catalogue || !nomProduit) return null;
+  const nomNormalise = nomProduit.toLowerCase().trim();
+
+  const exact = catalogue.find(p => p.nom_produit.toLowerCase().trim() === nomNormalise);
+  if (exact) return exact;
+
+  return catalogue.find(p =>
+    p.nom_produit.toLowerCase().includes(nomNormalise) || nomNormalise.includes(p.nom_produit.toLowerCase())
+  ) || null;
+}
+
+/**
+ * Envoie UNE photo produit via Meta (à partir d'une URL publique Supabase
+ * Storage). Jamais appelée en rafale : le webhook n'envoie qu'un seul appel
+ * par réponse, pour un seul produit maximum.
+ */
+async function envoyerImageWhatsApp(fromPhoneNumberId, to, imageUrl) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'image',
+      image: { link: imageUrl },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi image produit Meta:', response.status, errText);
+    throw new Error(`Meta API (image) a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
+}
+
 // ─── CLAUDE ──────────────────────────────────────────────────────────────────
 
 async function askClaude(history, systemPrompt) {
@@ -663,19 +724,33 @@ async function askClaude(history, systemPrompt) {
  * Le catalogue n'est plus envoyé en photos : il est déjà présent en texte
  * riche dans systemPrompt (voir formatCatalogueForPrompt), ce qui rend le
  * coût de cet appel indépendant de la taille du catalogue du commerçant.
+ *
+ * IMPORTANT : `history` reçu ici doit déjà EXCLURE le placeholder texte du
+ * message photo en cours (voir le webhook) — sinon Claude reçoit deux tours
+ * "client" collés d'affilée (le placeholder, puis l'image), ce qui le pousse
+ * à s'ancrer sur d'anciens tours de la conversation au lieu de traiter cette
+ * image comme la question actuelle du client.
+ *
+ * `legendeClient` porte le texte RÉEL éventuellement tapé par le client en
+ * légende de sa photo (ex: "Bonjour, vous avez ça ?"). Comme le placeholder
+ * a été retiré de l'historique, ce texte doit être réinjecté explicitement
+ * ici — sinon une salutation ou une question tapée avec la photo disparaît
+ * purement et simplement.
  */
-async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType, texteClient) {
+async function askClaudeAvecImage(history, systemPrompt, imageClientBase64, imageClientMimeType, legendeClient) {
+  const ligneLegende = legendeClient
+    ? `Le client a envoyé ce message avec sa photo : "${legendeClient}". Réponds-y d'abord (une salutation ou une question mérite toujours une réponse) avant de parler du produit — ne l'ignore jamais.`
+    : "Le client n'a pas ajouté de texte à sa photo.";
+
   const instructionAnalyseImage =
-    "Le client final vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux), accompagnée de ce message écrit par le client : \"" + (texteClient || '(aucun texte, seulement la photo)') + "\". " +
-    "Réponds d'abord normalement à ce message écrit (ex : si le client salue, réponds à sa salutation avant toute chose) puis analyse l'image envoyée. Croise les informations visuelles et le texte éventuel visible sur l'image avec les \"Détails visuels\" de chaque produit fournis dans le catalogue texte de tes instructions. " +
-    "Si ça correspond clairement à un produit, réponds avec son nom et son prix exacts tels que donnés dans le catalogue. " +
-    "IMPORTANT - Ne recopie JAMAIS les \"Détails visuels\" du catalogue dans ta réponse au client (ex : ne décris pas la coupe, le col, les motifs, les finitions, etc.) — ces détails servent UNIQUEMENT à ta propre reconnaissance interne de l'image, le client voit déjà sa photo, il n'a pas besoin qu'on la lui décrive. Réponds simplement avec le nom du produit, sans description visuelle. " +
-    "IMPORTANT - Disponibilité : n'annonce JAMAIS explicitement qu'un article \"est disponible\" ou \"est en stock\" quand c'est effectivement le cas — le client écrit déjà en pensant que c'est disponible, le répéter est inutile et alourdit le message. Enchaîne directement sur la vente (prix, taille, commande). Mentionne la disponibilité UNIQUEMENT dans le cas contraire, quand l'article est en rupture. " +
-    "IMPORTANT - Ton naturel de propriétaire : tu es le vendeur de CETTE boutique, tu connais ton propre stock par cœur — tu ne \"reconnais\" pas un produit comme le ferait un outil externe d'identification. N'utilise JAMAIS de formulation du type \"je reconnais\", \"je pense reconnaître\", \"il me semble que c'est\", ou toute autre expression qui laisse penser que tu identifies un objet inconnu. Parle-en directement et naturellement, comme un commerçant qui regarde une photo de son propre article (ex : \"Ah oui, la veste de smoking croisée blanche et noire !\" plutôt que \"Je reconnais cette veste...\"). " +
+    "Le client vient d'envoyer la photo ci-dessous (capture d'écran ou photo vue sur les réseaux). " + ligneLegende + " " +
+    "Identifie le produit en croisant discrètement l'image avec les \"Détails visuels\" de chaque produit de ton catalogue. " +
+    "Présente-le directement et avec assurance, comme un vendeur qui connaît son stock par cœur — ne dis JAMAIS que tu \"reconnais\", \"identifies\" ou \"analyses\" l'image à voix haute, ça sonne comme si tu débutais dans ta propre boutique. " +
+    "Annonce la disponibilité en langage humain et naturel, intégré dans la phrase : \"disponible\" si le produit est en stock, \"malheureusement plus disponible\" (ou une formulation équivalente) sinon. N'écris JAMAIS \"Statut :\" suivi d'un label technique comme \"EN STOCK\" ou \"RUPTURE\" — ce n'est pas un vendeur, c'est un robot d'inventaire qui parle comme ça. " +
+    "Ne rajoute pas non plus d'annonce artificielle du type \"Bonne nouvelle —\" : donne l'info directement, avec un ton chaleureux mais sobre. " +
     "S'il y a un doute entre deux articles très similaires, pose une question de clarification au client plutôt que de deviner. " +
-    "Si l'article identifié porte le statut [RUPTURE], signale-le poliment au client et invite-le à regarder d'autres articles disponibles. " +
-    "Si rien ne correspond clairement dans le catalogue, dis-le honnêtement et demande une précision, sans jamais inventer un prix ou une disponibilité. " +
-    "Reste bref : pas de blabla ni de détails superflus, va droit à l'essentiel comme le ferait un vrai vendeur pressé mais chaleureux.";
+    "Si l'article est indisponible, signale-le poliment et invite le client à regarder d'autres articles disponibles. " +
+    "Si rien ne correspond clairement dans le catalogue, dis-le honnêtement et demande une précision, sans jamais inventer un prix ou une disponibilité.";
 
   const messageUtilisateur = {
     role: 'user',
@@ -1333,7 +1408,7 @@ app.get('/merchants/:phone_number_id/catalogue', async (req, res) => {
 
 app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
   const { phone_number_id } = req.params;
-  const { nom_produit, prix, variante, description, en_rupture } = req.body;
+  const { nom_produit, prix, variante, description, en_rupture, image_url } = req.body;
 
   if (!nom_produit || !prix || !description) {
     return res.status(400).json({ error: 'nom_produit, prix et description (détails visuels) sont requis' });
@@ -1347,6 +1422,7 @@ app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
       variante: variante || null,
       description,
       en_rupture: en_rupture === true,
+      image_url: image_url || null,
     }]).select();
 
     if (error) return res.status(500).json({ error: error.message });
@@ -1359,7 +1435,7 @@ app.post('/merchants/:phone_number_id/catalogue', async (req, res) => {
 
 app.patch('/catalogue/:id', async (req, res) => {
   const { id } = req.params;
-  const { nom_produit, prix, variante, description, en_rupture } = req.body;
+  const { nom_produit, prix, variante, description, en_rupture, image_url } = req.body;
 
   try {
     const produitExistant = await getProduitCatalogue(id);
@@ -1371,6 +1447,7 @@ app.patch('/catalogue/:id', async (req, res) => {
     if (variante !== undefined) misAJour.variante = variante;
     if (description !== undefined) misAJour.description = description;
     if (en_rupture !== undefined) misAJour.en_rupture = en_rupture === true;
+    if (image_url !== undefined) misAJour.image_url = image_url || null;
 
     const { data, error } = await supabase
       .from('catalogue_produits')
@@ -1382,6 +1459,37 @@ app.patch('/catalogue/:id', async (req, res) => {
     res.json({ produit: data[0] });
   } catch (err) {
     console.error('Erreur modification produit catalogue:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload d'une photo produit vers Supabase Storage (bucket public "produits").
+// Reçoit l'image en base64 depuis le dashboard, retourne l'URL publique à
+// stocker dans catalogue_produits.image_url. Photo optionnelle : sert
+// uniquement au rebond commercial (tag PHOTO_PRODUIT), jamais à la
+// reconnaissance d'image (qui reste basée sur le texte "Détails visuels").
+app.post('/upload-image', async (req, res) => {
+  const { imageBase64, mimeType } = req.body;
+
+  if (!imageBase64 || !mimeType) {
+    return res.status(400).json({ error: 'imageBase64 et mimeType requis' });
+  }
+
+  try {
+    const buffer = Buffer.from(imageBase64, 'base64');
+    const extension = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
+    const cheminFichier = `catalogue/${crypto.randomUUID()}.${extension}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('produits')
+      .upload(cheminFichier, buffer, { contentType: mimeType, upsert: false });
+
+    if (uploadError) return res.status(500).json({ error: uploadError.message });
+
+    const { data } = supabase.storage.from('produits').getPublicUrl(cheminFichier);
+    res.json({ image_url: data.publicUrl });
+  } catch (err) {
+    console.error('Erreur upload image catalogue:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1444,7 +1552,6 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     // l'historique (pas d'affichage d'image dans le transcript texte).
     let incomingMsg = message.text?.body;
     let imageClient = null;
-    let legendeClient = null;
 
     if (message.type === 'image' && message.image?.id) {
       try {
@@ -1452,8 +1559,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       } catch (err) {
         console.error('🚨 Erreur téléchargement photo client (Meta):', err.message);
       }
-      legendeClient = message.image.caption || null;
-      incomingMsg = legendeClient || '[Photo envoyée par le client]';
+      incomingMsg = message.image.caption || '[Photo envoyée par le client]';
     }
 
     if (!incomingMsg || !from || !phoneNumberId) return;
@@ -1496,31 +1602,32 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_STATUT_STOCK_NATUREL + REGLE_POLITESSE_SALUTATION + REGLE_PRIORITE_CATALOGUE_TEMPS_REEL + profileLine + catalogueLine + ligneStatutTemps;
-
-    // Fenêtre réduite envoyée à Claude pour la réponse principale — l'historique
-    // complet (history) reste utilisé plus loin pour l'extraction de profil et
-    // la détection commande/escalade, qui ont besoin de tout le contexte.
-    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + ligneStatutTemps;
 
     // Réponse principale — vision si le client a envoyé une photo, sinon texte classique
-    let reply;
+    let replyBrut;
     if (imageClient) {
+      // Le message "user" qu'on vient de sauvegarder ci-dessus (placeholder
+      // "[Photo envoyée par le client]") est déjà le dernier élément de
+      // `history`. askClaudeAvecImage rajoute son propre tour "user" (la
+      // vraie image) : si on lui passait `history` tel quel, Claude recevrait
+      // deux tours "client" collés d'affilée, et s'ancrerait sur d'anciens
+      // échanges au lieu de traiter cette photo comme la question actuelle.
+      // On retire donc ce placeholder avant l'appel vision.
+      const historyPourVision = history.slice(0, -1);
       try {
-        // historiquePourAppel contient déjà, en dernière position, le placeholder
-        // texte du message photo qu'on vient de sauvegarder (ex: "[Photo envoyée...]").
-        // On le retire avant l'appel vision, sinon Claude reçoit ce placeholder
-        // ET l'image du même message à la suite — deux tours "client" collés,
-        // ce qui le perturbe (il ignore alors la vraie question, ex: salutation).
-        const historiquePourVision = historiquePourAppel.slice(0, -1);
-        reply = await askClaudeAvecImage(historiquePourVision, systemPrompt, imageClient.base64, imageClient.mimeType, legendeClient);
+        replyBrut = await askClaudeAvecImage(historyPourVision, systemPrompt, imageClient.base64, imageClient.mimeType, message.image.caption || '');
       } catch (err) {
         console.error('🚨 Erreur analyse vision de la photo client:', err.message);
-        reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
+        replyBrut = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
       }
     } else {
-      reply = await askClaude(historiquePourAppel, systemPrompt);
+      replyBrut = await askClaude(history, systemPrompt);
     }
+    // Retire le tag technique PHOTO_PRODUIT (invisible pour le client) avant
+    // toute sauvegarde ou envoi — voir REGLE_PHOTO_PRODUIT.
+    const { texteNettoye: reply, nomProduitPhoto } = extraireTagPhotoProduit(replyBrut);
+
     await saveMessageToSupabase(sessionId, 'assistant', reply);
 
     // Extraction et mise à jour du profil en arrière-plan (non bloquant —
@@ -1529,6 +1636,22 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     extractAndUpdateProfile(sessionId, historyForExtraction).catch(() => {});
 
     await sendWhatsAppMessage(phoneNumberId, from, reply);
+
+    // Envoi de la photo du produit recommandé, UNIQUEMENT si Claude a posé le
+    // tag PHOTO_PRODUIT et que ce produit a une photo enregistrée. Jamais plus
+    // d'une photo par réponse (un seul tag possible, une seule fiche trouvée).
+    if (nomProduitPhoto) {
+      const produitPhoto = trouverProduitParNom(catalogue, nomProduitPhoto);
+      if (produitPhoto?.image_url) {
+        try {
+          await envoyerImageWhatsApp(phoneNumberId, from, produitPhoto.image_url);
+        } catch (err) {
+          console.error(`🚨 Erreur envoi photo produit alternative (${nomProduitPhoto}) :`, err.message);
+        }
+      } else {
+        console.log(`Tag PHOTO_PRODUIT reçu pour "${nomProduitPhoto}" mais aucune photo enregistrée — poursuite en texte seul.`);
+      }
+    }
 
     // Détection de commande confirmée + alerte immédiate au marchand.
     // Contrairement à l'extraction de profil, on ATTEND ce résultat et on
