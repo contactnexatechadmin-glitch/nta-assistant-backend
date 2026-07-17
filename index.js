@@ -33,6 +33,15 @@ const MESSAGE_ACCES_COUPE =
 // Augmenté à 20 messages (suffisant pour tout échange en cours, économique en tokens)
 const MAX_HISTORY = 20;
 
+// Nombre de messages RÉELLEMENT envoyés à Claude à chaque appel (distinct de
+// MAX_HISTORY, qui reste la limite de stockage). Une fenêtre plus courte limite
+// l'effet d'ancrage : si le bot a répété plusieurs fois une info de stock
+// périmée, moins de répétitions dans le contexte = moins de biais de cohérence
+// face à la donnée catalogue fraîche injectée à chaque message (voir
+// REGLE_PRIORITE_CATALOGUE_TEMPS_REEL). 10 reste suffisant pour suivre une
+// commande complète (produit → quantité → adresse → heure → confirmation).
+const MAX_HISTORY_ENVOYE_A_CLAUDE = 10;
+
 const REGLE_FORMATAGE_WHATSAPP =
   "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
 
@@ -66,8 +75,9 @@ const REGLE_POLITESSE_SALUTATION =
   "\n\nIMPORTANT - Politesse et salutation : si le client commence son message par une salutation (bonjour, bonsoir, salut, etc.), réponds-y toujours d'abord brièvement et chaleureusement avant d'enchaîner sur le sujet commercial. Ne jamais ignorer une salutation pour foncer directement sur la vente — un vrai vendeur humain salue toujours son client avant de parler affaires.";
 
 const REGLE_PRIORITE_CATALOGUE_TEMPS_REEL =
-  "\n\nIMPORTANT - Fraîcheur des données catalogue : le [Catalogue produits] fourni dans tes instructions reflète l'état RÉEL et ACTUEL des stocks et prix, mis à jour en temps réel par le commerçant à chaque message. Il a TOUJOURS priorité absolue sur toute information dite plus tôt dans cette même conversation (par toi ou par le client), même si TOI-MÊME tu as dit le contraire plus tôt dans cet échange. " +
-  "Si un produit a été présenté comme disponible plus tôt dans la conversation mais apparaît maintenant [RUPTURE] dans le catalogue (ou l'inverse), corrige-toi et fie-toi TOUJOURS à la donnée du catalogue actuelle fournie dans CE message — jamais à ce que toi-même ou le client avez dit avant. Ne reste jamais figé sur une ancienne réponse par souci de cohérence apparente : la cohérence avec la réalité actuelle du stock prime toujours.";
+  "\n\nIMPORTANT - Autorité absolue de la base de données temps réel : les informations contenues dans la balise <base_de_donnees_temps_reel> représentent la vérité absolue à la seconde près. Cette balise a autorité totale sur tout l'historique de la conversation. " +
+  "Si un article est marqué [EN STOCK] dans cette balise, tu dois le proposer normalement au client, MÊME SI tu as affirmé le contraire dans tes messages précédents de cette même conversation. Si un article est marqué [RUPTURE] dans cette balise, il est indisponible MÊME SI tu as dit le contraire avant. " +
+  "Ne traite jamais une répétition dans l'historique comme une preuve de vérité : seule la balise <base_de_donnees_temps_reel> du message actuel compte, elle est régénérée à chaque message et reflète l'état réel actuel du stock.";
 
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
@@ -402,7 +412,7 @@ function formatCatalogueForPrompt(produits) {
     return lignes.join('\n');
   }).join('\n\n');
 
-  return `\n\n[Catalogue produits]\n${fiches}`;
+  return `\n\n<base_de_donnees_temps_reel>\n${fiches}\n</base_de_donnees_temps_reel>`;
 }
 
 async function getProduitCatalogue(id) {
@@ -1483,23 +1493,28 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const ligneStatutTemps = formatDateHeureAbidjan();
     const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_STATUT_STOCK_NATUREL + REGLE_POLITESSE_SALUTATION + REGLE_PRIORITE_CATALOGUE_TEMPS_REEL + profileLine + catalogueLine + ligneStatutTemps;
 
+    // Fenêtre réduite envoyée à Claude pour la réponse principale — l'historique
+    // complet (history) reste utilisé plus loin pour l'extraction de profil et
+    // la détection commande/escalade, qui ont besoin de tout le contexte.
+    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
+
     // Réponse principale — vision si le client a envoyé une photo, sinon texte classique
     let reply;
     if (imageClient) {
       try {
-        // L'historique contient déjà, en dernière position, le placeholder texte
-        // du message photo qu'on vient de sauvegarder (ex: "[Photo envoyée...]").
+        // historiquePourAppel contient déjà, en dernière position, le placeholder
+        // texte du message photo qu'on vient de sauvegarder (ex: "[Photo envoyée...]").
         // On le retire avant l'appel vision, sinon Claude reçoit ce placeholder
         // ET l'image du même message à la suite — deux tours "client" collés,
         // ce qui le perturbe (il ignore alors la vraie question, ex: salutation).
-        const historiquePourVision = history.slice(0, -1);
+        const historiquePourVision = historiquePourAppel.slice(0, -1);
         reply = await askClaudeAvecImage(historiquePourVision, systemPrompt, imageClient.base64, imageClient.mimeType);
       } catch (err) {
         console.error('🚨 Erreur analyse vision de la photo client:', err.message);
         reply = "Merci pour la photo ! Je n'arrive pas à l'analyser pour le moment — pourriez-vous me préciser le nom du produit qui vous intéresse ?";
       }
     } else {
-      reply = await askClaude(history, systemPrompt);
+      reply = await askClaude(historiquePourAppel, systemPrompt);
     }
     await saveMessageToSupabase(sessionId, 'assistant', reply);
 
