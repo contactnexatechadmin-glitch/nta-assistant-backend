@@ -1296,8 +1296,10 @@ cron.schedule('0 20 * * 0', () => {
 const SYSTEM_WHATSAPP_BASE =
   "Tu es l'assistant WhatsApp d'un commerçant ivoirien. Réponds en français, de façon chaleureuse, brève et utile, comme un vendeur sympathique. Garde le fil de la conversation en t'appuyant sur les échanges précédents.";
 
-const SYSTEM_DEMO =
-  "Tu es l'assistante virtuelle de la Boutique Adjoua Mode, une boutique de vêtements féminins tendance située à Cocody, Abidjan, Côte d'Ivoire...\n[Règles de vouvoiement, tarifs de 5000 à 85000 FCFA, livraisons 2-4h]" + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES;
+// Phone Number ID réel de Boutique Adjoua Mode dans `merchants` — utilisé pour
+// que la démo publique (page de vente) reflète exactement l'expérience WhatsApp
+// réelle (catalogue, stock, règles), au lieu d'un texte générique codé en dur.
+const DEMO_PHONE_NUMBER_ID = '1217171248140164';
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
@@ -1689,12 +1691,29 @@ app.post('/demo', async (req, res) => {
   const { message, sessionId } = req.body;
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
   try {
+    const merchant = await getMerchant(DEMO_PHONE_NUMBER_ID);
+    if (!merchant) return res.status(500).json({ error: 'Commerçant démo introuvable' });
+
     await saveMessageToSupabase(sessionId, 'user', message);
-    const history = await getHistoryFromSupabase(sessionId);
-    const reply = await askClaude(history, SYSTEM_DEMO);
+
+    const [history, profile, catalogue] = await Promise.all([
+      getHistoryFromSupabase(sessionId),
+      getClientProfile(sessionId),
+      getCatalogueProduits(DEMO_PHONE_NUMBER_ID),
+    ]);
+
+    const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
+    const profileLine = formatProfileForPrompt(profile);
+    const catalogueLine = formatCatalogueForPrompt(catalogue);
+    const ligneStatutTemps = formatDateHeureAbidjan();
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + ligneStatutTemps;
+
+    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
+    const reply = await askClaude(historiquePourAppel, systemPrompt);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
     res.json({ reply });
   } catch (err) {
+    console.error('Erreur route /demo:', err.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
