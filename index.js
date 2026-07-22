@@ -259,7 +259,7 @@ ${transcript}`;
         'accept-encoding': 'identity',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 150,
         messages: [{ role: 'user', content: extractionPrompt }],
       }),
@@ -860,7 +860,7 @@ async function extraireDetailsCommande(transcript) {
         'accept-encoding': 'identity',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
         system: systemPrompt,
         messages: [{ role: 'user', content: `Échange :\n${transcript}` }],
@@ -989,7 +989,7 @@ async function extraireDetailsEscalade(transcript, dernierMessageClient) {
         'accept-encoding': 'identity',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
         system: systemPrompt,
         messages: [{ role: 'user', content: `Historique complet (contexte) :\n${transcript}\n\n---\nTOUT DERNIER MESSAGE DU CLIENT (celui qui a déclenché l'escalade) :\n${dernierMessageClient}` }],
