@@ -1687,6 +1687,11 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
   }
 });
 
+// Limite de messages par session de démo publique — évite qu'un pic de trafic
+// (ex: affiche concurrente, curiosité en masse) ne génère un coût Claude illimité
+// sur une simple page de vente. Au-delà, on redirige vers le vrai numéro WhatsApp.
+const MAX_MESSAGES_DEMO = 10;
+
 app.post('/demo', async (req, res) => {
   const { message, sessionId } = req.body;
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
@@ -1694,10 +1699,18 @@ app.post('/demo', async (req, res) => {
     const merchant = await getMerchant(DEMO_PHONE_NUMBER_ID);
     if (!merchant) return res.status(500).json({ error: 'Commerçant démo introuvable' });
 
+    const historyAvant = await getHistoryFromSupabase(sessionId);
+    const nbMessagesClient = historyAvant.filter(m => m.role === 'user').length;
+
+    if (nbMessagesClient >= MAX_MESSAGES_DEMO) {
+      return res.json({
+        reply: "Merci d'avoir testé notre démo ! 😊 Pour continuer la conversation et découvrir toutes les fonctionnalités (photos, stock en temps réel...), contactez-nous directement sur WhatsApp : https://wa.me/2250506816740",
+      });
+    }
+
     await saveMessageToSupabase(sessionId, 'user', message);
 
-    const [history, profile, catalogue] = await Promise.all([
-      getHistoryFromSupabase(sessionId),
+    const [profile, catalogue] = await Promise.all([
       getClientProfile(sessionId),
       getCatalogueProduits(DEMO_PHONE_NUMBER_ID),
     ]);
@@ -1708,7 +1721,7 @@ app.post('/demo', async (req, res) => {
     const ligneStatutTemps = formatDateHeureAbidjan();
     const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + ligneStatutTemps;
 
-    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
+    const historiquePourAppel = [...historyAvant.slice(-(MAX_HISTORY_ENVOYE_A_CLAUDE - 1)), { role: 'user', content: message }];
     const reply = await askClaude(historiquePourAppel, systemPrompt);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
     res.json({ reply });
