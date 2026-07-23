@@ -24,11 +24,15 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_APP_SECRET = process.env.META_APP_SECRET; // optionnel pour l'instant, à activer avant la prod réelle
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // pour la transcription des notes vocales via Whisper
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
+
+const MESSAGE_QUOTA_VOCAL_EPUISE =
+  "Merci pour votre message vocal 🎙️ Je ne peux malheureusement plus lire les notes vocales pour le moment. Pourriez-vous m'écrire votre message en texte ? Je reste entièrement à votre disposition !";
 
 // Augmenté à 20 messages (suffisant pour tout échange en cours, économique en tokens)
 const MAX_HISTORY = 20;
@@ -334,6 +338,29 @@ async function saveMessageToSupabase(sessionId, role, content) {
   }
 }
 
+/**
+ * Compte le nombre exact de messages envoyés par le visiteur pour une
+ * session de démo publique donnée. Requête dédiée (plutôt que de se fier à
+ * l'historique tronqué à MAX_HISTORY) pour que la limite anti-abus reste
+ * fiable même après de nombreux échanges.
+ * Fail-open en cas d'erreur technique : on ne bloque pas la démo pour un
+ * souci Supabase, on logue en 🚨 pour vérification.
+ */
+async function compterMessagesUtilisateurDemo(sessionId) {
+  const { count, error } = await supabase
+    .from('conversations')
+    .select('id', { count: 'exact', head: true })
+    .eq('session_id', sessionId)
+    .eq('role', 'user');
+
+  if (error) {
+    console.error('🚨 Erreur comptage messages démo (fail-open) :', error.message);
+    return 0;
+  }
+
+  return count || 0;
+}
+
 // ─── COMMERÇANTS (MULTI-TENANT) ───────────────────────────────────────────────
 //
 // Un seul webhook Meta reçoit les messages de TOUS les commerçants. Chaque
@@ -345,7 +372,7 @@ async function saveMessageToSupabase(sessionId, role, content) {
 async function getMerchant(phoneNumberId) {
   const { data, error } = await supabase
     .from('merchants')
-    .select('phone_number_id, nom_commerce, system_prompt, actif, numero_proprietaire')
+    .select('phone_number_id, nom_commerce, system_prompt, actif, numero_proprietaire, forfait')
     .eq('phone_number_id', phoneNumberId)
     .maybeSingle();
 
@@ -627,6 +654,112 @@ async function telechargerMediaMeta(mediaId) {
 
   const buffer = Buffer.from(await mediaRes.arrayBuffer());
   return { base64: buffer.toString('base64'), mimeType: info.mime_type || 'image/jpeg' };
+}
+
+// ─── NOTES VOCALES CLIENTS (TRANSCRIPTION WHISPER + QUOTA HYBRIDE) ────────────
+//
+// Quand un client final envoie une note vocale, Meta transmet un media_id
+// (comme pour une photo) : on réutilise telechargerMediaMeta() pour récupérer
+// le fichier audio brut, puis on l'envoie à l'API OpenAI Whisper pour obtenir
+// le texte. Ce texte est ensuite traité exactement comme un message texte
+// classique (même historique, même system_prompt, mêmes règles).
+//
+// Le quota (forfait Base = 250 vocaux/mois, Premium = illimité) est vérifié
+// et décrémenté de façon atomique via la fonction Supabase
+// decrementer_quota_vocal(), pour éviter tout risque de race condition si
+// plusieurs vocaux arrivent au même instant.
+
+/**
+ * Envoie l'audio à l'API OpenAI Whisper et retourne le texte transcrit.
+ * Le paramètre `language: 'fr'` accélère et fiabilise la transcription
+ * (les commerçants et leurs clients échangent en français).
+ */
+async function transcrireAudioWhisper(audioBase64, mimeType) {
+  const buffer = Buffer.from(audioBase64, 'base64');
+  const extension = mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a' : 'ogg';
+  const blob = new Blob([buffer], { type: mimeType });
+
+  const formData = new FormData();
+  formData.append('file', blob, `note_vocale.${extension}`);
+  formData.append('model', 'whisper-1');
+  formData.append('language', 'fr');
+
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Erreur API Whisper: ${response.status} ${errText}`);
+  }
+
+  const data = await response.json();
+  return (data.text || '').trim();
+}
+
+/**
+ * Vérifie et décrémente le quota vocal du commerçant via la fonction Supabase
+ * decrementer_quota_vocal (décrémentation atomique, "zéro défaut" face aux
+ * requêtes simultanées). La fonction gère elle-même le cas Premium
+ * (illimité) en interne.
+ *
+ * Fail-open volontaire en cas d'erreur technique Supabase : un vocal traité
+ * par erreur coûte quelques centimes d'API Whisper, un client bloqué à tort
+ * coûte une vente. On logue en 🚨 pour vérification manuelle plutôt que de
+ * pénaliser silencieusement le client.
+ */
+async function verifierEtDecrementerQuotaVocal(phoneNumberId) {
+  const { data, error } = await supabase.rpc('decrementer_quota_vocal', { p_phone_number_id: phoneNumberId });
+
+  if (error) {
+    console.error('🚨 Erreur RPC décrémentation quota vocal (fail-open, vocal autorisé par sécurité) :', error.message);
+    return { autorise: true, quota_restant: null, forfait: null };
+  }
+
+  return data[0];
+}
+
+/**
+ * Enchaîne la vérification/décrémentation du quota et, si le quota est
+ * épuisé, le double fallback voulu : message clair au client final (pour ne
+ * jamais le laisser sans réponse) + alerte au commerçant (pour transformer
+ * le blocage en opportunité d'upgrade vers le Premium).
+ * Retourne { autorise: true } si la transcription peut continuer.
+ */
+async function gererQuotaVocal(merchant, phoneNumberId, from) {
+  const { autorise } = await verifierEtDecrementerQuotaVocal(phoneNumberId);
+
+  if (!autorise) {
+    console.log(`Quota vocal épuisé pour ${merchant.nom_commerce} — vocal refusé pour ${from}.`);
+    await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_QUOTA_VOCAL_EPUISE);
+    await alerterQuotaVocalEpuise(merchant);
+  }
+
+  return { autorise };
+}
+
+/**
+ * Alerte le commerçant quand son quota de vocaux (forfait Base) est épuisé,
+ * en l'invitant à passer au forfait Premium (35 000 FCFA, illimité).
+ */
+async function alerterQuotaVocalEpuise(merchant) {
+  if (!merchant.numero_proprietaire) {
+    console.error(`🚨 Quota vocal épuisé pour ${merchant.nom_commerce} mais numero_proprietaire manquant — alerte impossible`);
+    return;
+  }
+
+  const texteAlerte =
+    "🎙️ Le quota de notes vocales de votre forfait Base est épuisé pour ce mois-ci. " +
+    "Vos clients ne peuvent plus vous envoyer de vocaux tant que le quota n'est pas renouvelé. " +
+    "Passez au forfait Premium (35 000 FCFA/mois) pour une transcription illimitée.";
+
+  try {
+    await sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteAlerte);
+  } catch (err) {
+    console.error(`🚨 Erreur envoi alerte quota vocal pour ${merchant.nom_commerce} :`, err.message);
+  }
 }
 
 // ─── TAG PHOTO_PRODUIT (REBOND COMMERCIAL SUR RUPTURE) ────────────────────────
@@ -1301,6 +1434,15 @@ const SYSTEM_WHATSAPP_BASE =
 // réelle (catalogue, stock, règles), au lieu d'un texte générique codé en dur.
 const DEMO_PHONE_NUMBER_ID = '1217171248140164';
 
+// Limite de messages sur la démo publique (page de vente) : chaque message
+// déclenche un vrai appel Claude Sonnet, donc un vrai coût. Sans limite,
+// n'importe qui pourrait faire exploser la facture juste en spammant la démo.
+// Au-delà de ce nombre de messages CLIENT dans une même session, on redirige
+// vers le vrai numéro WhatsApp au lieu d'appeler Claude.
+const MAX_MESSAGES_DEMO = 10;
+const MESSAGE_LIMITE_DEMO_ATTEINTE =
+  "Merci pour cet échange ! 😊 Pour continuer la discussion et découvrir tout ce que l'assistant peut faire pour votre propre boutique, écrivez-nous directement sur WhatsApp : https://wa.me/2250506816740";
+
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
@@ -1556,6 +1698,22 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const phoneNumberId = value?.metadata?.phone_number_id;
     const from = normaliserNumeroIvoirien(message.from);
 
+    if (!from || !phoneNumberId) return;
+
+    // Identification du commerçant via son numéro Meta (table `merchants`).
+    // Fait AVANT le traitement du contenu du message (texte/image/audio) car
+    // le traitement audio a besoin de connaître le forfait du commerçant
+    // (Base avec quota, ou Premium illimité).
+    const merchant = await getMerchant(phoneNumberId);
+    if (!merchant) {
+      console.error(`Aucun commerçant trouvé pour phone_number_id=${phoneNumberId}`);
+      return;
+    }
+    if (!merchant.actif) {
+      await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_ACCES_COUPE);
+      return;
+    }
+
     // Les clients peuvent envoyer une photo (produit vu sur les réseaux) au
     // lieu d'un texte. On télécharge alors la photo depuis Meta pour
     // l'analyser en vision ; le texte sauvegardé sert de trace lisible dans
@@ -1572,18 +1730,24 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       incomingMsg = message.image.caption || '[Photo envoyée par le client]';
     }
 
-    if (!incomingMsg || !from || !phoneNumberId) return;
+    // Note vocale client : vérification/décrémentation du quota AVANT tout
+    // appel à Whisper (on ne paie pas une transcription qu'on va refuser).
+    // Le forfait Premium est géré en interne par decrementer_quota_vocal.
+    if (message.type === 'audio' && message.audio?.id) {
+      const { autorise } = await gererQuotaVocal(merchant, phoneNumberId, from);
+      if (!autorise) return; // fallback déjà envoyé au client + alerte déjà envoyée au commerçant
 
-    // Identification du commerçant via son numéro Meta (table `merchants`)
-    const merchant = await getMerchant(phoneNumberId);
-    if (!merchant) {
-      console.error(`Aucun commerçant trouvé pour phone_number_id=${phoneNumberId}`);
-      return;
+      try {
+        const audio = await telechargerMediaMeta(message.audio.id);
+        incomingMsg = await transcrireAudioWhisper(audio.base64, audio.mimeType);
+        if (!incomingMsg) incomingMsg = '[Note vocale reçue mais vide après transcription]';
+      } catch (err) {
+        console.error('🚨 Erreur transcription note vocale (Whisper):', err.message);
+        incomingMsg = "[Note vocale reçue, transcription impossible — le client a peut-être précisé sa demande à l'oral]";
+      }
     }
-    if (!merchant.actif) {
-      await sendWhatsAppMessage(phoneNumberId, from, MESSAGE_ACCES_COUPE);
-      return;
-    }
+
+    if (!incomingMsg) return;
 
     // On isole l'historique et le profil par commerçant ET par client, pour
     // qu'un même numéro client ne mélange jamais les conversations de deux
@@ -1687,11 +1851,6 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
   }
 });
 
-// Limite de messages par session de démo publique — évite qu'un pic de trafic
-// (ex: affiche concurrente, curiosité en masse) ne génère un coût Claude illimité
-// sur une simple page de vente. Au-delà, on redirige vers le vrai numéro WhatsApp.
-const MAX_MESSAGES_DEMO = 10;
-
 app.post('/demo', async (req, res) => {
   const { message, sessionId } = req.body;
   if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
@@ -1699,21 +1858,24 @@ app.post('/demo', async (req, res) => {
     const merchant = await getMerchant(DEMO_PHONE_NUMBER_ID);
     if (!merchant) return res.status(500).json({ error: 'Commerçant démo introuvable' });
 
-    const historyAvant = await getHistoryFromSupabase(sessionId);
-    const nbMessagesClient = historyAvant.filter(m => m.role === 'user').length;
-
-    if (nbMessagesClient >= MAX_MESSAGES_DEMO) {
-      return res.json({
-        reply: "Merci d'avoir testé notre démo ! 😊 Pour continuer la conversation et découvrir toutes les fonctionnalités (photos, stock en temps réel...), contactez-nous directement sur WhatsApp : https://wa.me/2250506816740",
-      });
-    }
-
     await saveMessageToSupabase(sessionId, 'user', message);
 
-    const [profile, catalogue] = await Promise.all([
+    const [history, profile, catalogue] = await Promise.all([
+      getHistoryFromSupabase(sessionId),
       getClientProfile(sessionId),
       getCatalogueProduits(DEMO_PHONE_NUMBER_ID),
     ]);
+
+    // Garde-fou anti-abus : au-delà de MAX_MESSAGES_DEMO messages envoyés par
+    // ce visiteur, on ne fait plus AUCUN appel à Claude — on renvoie une
+    // réponse fixe qui redirige vers le vrai numéro WhatsApp. Le message du
+    // visiteur est déjà sauvegardé ci-dessus (pour garder une trace), mais le
+    // coût d'un appel Sonnet est évité.
+    const nombreMessagesClient = await compterMessagesUtilisateurDemo(sessionId);
+    if (nombreMessagesClient > MAX_MESSAGES_DEMO) {
+      await saveMessageToSupabase(sessionId, 'assistant', MESSAGE_LIMITE_DEMO_ATTEINTE);
+      return res.json({ reply: MESSAGE_LIMITE_DEMO_ATTEINTE });
+    }
 
     const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
     const profileLine = formatProfileForPrompt(profile);
@@ -1721,7 +1883,7 @@ app.post('/demo', async (req, res) => {
     const ligneStatutTemps = formatDateHeureAbidjan();
     const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + ligneStatutTemps;
 
-    const historiquePourAppel = [...historyAvant.slice(-(MAX_HISTORY_ENVOYE_A_CLAUDE - 1)), { role: 'user', content: message }];
+    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
     const reply = await askClaude(historiquePourAppel, systemPrompt);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
     res.json({ reply });
