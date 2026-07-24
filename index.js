@@ -24,7 +24,7 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_APP_SECRET = process.env.META_APP_SECRET; // optionnel pour l'instant, à activer avant la prod réelle
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // pour la transcription des notes vocales via Whisper
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; // pour la transcription des notes vocales via Whisper (OpenRouter)
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
@@ -670,7 +670,9 @@ async function telechargerMediaMeta(mediaId) {
 // plusieurs vocaux arrivent au même instant.
 
 /**
- * Envoie l'audio à l'API OpenAI Whisper et retourne le texte transcrit.
+ * Envoie l'audio à Whisper via OpenRouter et retourne le texte transcrit.
+ * OpenRouter expose un endpoint compatible OpenAI (même format multipart),
+ * seuls l'URL, la clé et le nom du modèle changent.
  * Le paramètre `language: 'fr'` accélère et fiabilise la transcription
  * (les commerçants et leurs clients échangent en français).
  */
@@ -681,18 +683,18 @@ async function transcrireAudioWhisper(audioBase64, mimeType) {
 
   const formData = new FormData();
   formData.append('file', blob, `note_vocale.${extension}`);
-  formData.append('model', 'whisper-1');
+  formData.append('model', 'openai/whisper-large-v3');
   formData.append('language', 'fr');
 
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+  const response = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}` },
     body: formData,
   });
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Erreur API Whisper: ${response.status} ${errText}`);
+    throw new Error(`Erreur API Whisper (OpenRouter): ${response.status} ${errText}`);
   }
 
   const data = await response.json();
