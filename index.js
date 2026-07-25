@@ -664,7 +664,7 @@ async function telechargerMediaMeta(mediaId) {
 // le texte. Ce texte est ensuite traité exactement comme un message texte
 // classique (même historique, même system_prompt, mêmes règles).
 //
-// Le quota (forfait Base = 250 vocaux/mois, Premium = illimité) est vérifié
+// Le quota (forfait Base = 100 vocaux/mois, Premium = illimité) est vérifié
 // et décrémenté de façon atomique via la fonction Supabase
 // decrementer_quota_vocal(), pour éviter tout risque de race condition si
 // plusieurs vocaux arrivent au même instant.
@@ -744,7 +744,7 @@ async function gererQuotaVocal(merchant, phoneNumberId, from) {
 
 /**
  * Alerte le commerçant quand son quota de vocaux (forfait Base) est épuisé,
- * en l'invitant à passer au forfait Premium (35 000 FCFA, illimité).
+ * en l'invitant à passer au forfait Premium (42 000 FCFA, illimité).
  */
 async function alerterQuotaVocalEpuise(merchant) {
   if (!merchant.numero_proprietaire) {
@@ -755,7 +755,7 @@ async function alerterQuotaVocalEpuise(merchant) {
   const texteAlerte =
     "🎙️ Le quota de notes vocales de votre forfait Base est épuisé pour ce mois-ci. " +
     "Vos clients ne peuvent plus vous envoyer de vocaux tant que le quota n'est pas renouvelé. " +
-    "Passez au forfait Premium (35 000 FCFA/mois) pour une transcription illimitée.";
+    "Passez au forfait Premium (42 000 FCFA/mois) pour une transcription illimitée.";
 
   try {
     await sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteAlerte);
@@ -1421,6 +1421,81 @@ async function envoyerBilanHebdomadaire() {
 
 cron.schedule('0 20 * * 0', () => {
   envoyerBilanHebdomadaire();
+});
+
+// ─── RESET MENSUEL DU QUOTA VOCAL (DATE ANNIVERSAIRE) ─────────────────────────
+//
+// Contrairement aux bilans (même heure pour tous), le reset du quota doit
+// suivre le cycle de facturation propre à CHAQUE commerçant (sa date_debut),
+// pas une date fixe commune — sinon un commerçant qui paie le 15 du mois se
+// retrouverait avec un quota resynchronisé sur le 1er, déphasé de son cycle
+// réel. Le cron tourne une fois par jour et ne resette QUE les commerçants
+// dont c'est effectivement le jour anniversaire aujourd'hui.
+// Opération silencieuse : aucun message envoyé au commerçant (voir échange
+// avec le DG — seul le quota ÉPUISÉ mérite une alerte, pas son renouvellement).
+
+/**
+ * Détermine si aujourd'hui (heure d'Abidjan) correspond au jour anniversaire
+ * d'un commerçant, à partir de sa date_debut. Gère le cas des mois plus
+ * courts (ex: inscription le 31 → anniversaire calé sur le dernier jour du
+ * mois pour février, avril, etc.) pour ne jamais sauter un cycle.
+ */
+function estJourAnniversaireQuota(dateDebutStr) {
+  const dateDebut = new Date(dateDebutStr);
+  const maintenant = new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Abidjan' }));
+
+  const jourInscription = dateDebut.getDate();
+  const dernierJourMoisActuel = new Date(maintenant.getFullYear(), maintenant.getMonth() + 1, 0).getDate();
+  const jourCible = Math.min(jourInscription, dernierJourMoisActuel);
+
+  return maintenant.getDate() === jourCible;
+}
+
+/**
+ * Récupère tous les commerçants en forfait Base (seuls concernés par un
+ * quota — le Premium est illimité et n'a rien à resetter).
+ */
+async function getMerchantsBaseAvecQuota() {
+  const { data, error } = await supabase
+    .from('merchants')
+    .select('phone_number_id, nom_commerce, date_debut, quota_vocal_max')
+    .eq('forfait', 'base');
+
+  if (error) {
+    console.error('Erreur récupération commerçants Base pour reset quota:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+/**
+ * Boucle sur tous les commerçants Base et remet quota_vocal_restant à
+ * quota_vocal_max UNIQUEMENT pour ceux dont c'est le jour anniversaire.
+ */
+async function resetQuotasVocalAnniversaire() {
+  const merchants = await getMerchantsBaseAvecQuota();
+  if (merchants.length === 0) return;
+
+  for (const merchant of merchants) {
+    if (!merchant.date_debut || !estJourAnniversaireQuota(merchant.date_debut)) continue;
+
+    const { error } = await supabase
+      .from('merchants')
+      .update({ quota_vocal_restant: merchant.quota_vocal_max })
+      .eq('phone_number_id', merchant.phone_number_id);
+
+    if (error) {
+      console.error(`🚨 Erreur reset quota vocal pour ${merchant.nom_commerce} :`, error.message);
+    } else {
+      console.log(`Quota vocal resetté pour ${merchant.nom_commerce} (anniversaire du ${merchant.date_debut}).`);
+    }
+  }
+}
+
+// Tourne une fois par jour, tôt le matin (avant l'ouverture des boutiques),
+// pour que le quota soit déjà rechargé si un client écrit dès l'aube.
+cron.schedule('0 5 * * *', () => {
+  resetQuotasVocalAnniversaire();
 });
 
 // ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
