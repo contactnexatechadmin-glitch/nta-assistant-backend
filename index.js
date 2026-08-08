@@ -71,6 +71,12 @@ const REGLE_CATALOGUE_TEMPS_REEL =
   "Ne traite jamais une répétition dans l'historique comme une preuve de vérité : seule la balise <base_de_donnees_temps_reel> du message actuel compte, elle est régénérée à chaque message et reflète l'état réel actuel du stock. " +
   "IMPORTANT - Langage naturel du statut : les labels [EN STOCK] / [RUPTURE] sont un format INTERNE pour toi, jamais à répéter tels quels au client. Traduis-les toujours en langage humain, intégré dans la phrase : \"disponible\" ou \"malheureusement plus disponible\" (ou équivalent), jamais \"Statut : EN STOCK\" ni aucune ligne façon fiche d'inventaire.";
 
+const REGLE_PAS_DE_LISTE_CATALOGUE =
+  "\n\nIMPORTANT - Ne jamais réciter tout le catalogue : si le client pose une question large et vague du type \"quels sont vos produits ?\", \"qu'est-ce que vous avez comme articles ?\", \"montrez-moi votre catalogue\" (sans préciser un type d'article précis), NE LISTE JAMAIS tous les produits un par un, même s'il y en a peu. " +
+  "Un client qui pose ce genre de question ne sait généralement pas encore ce qu'il veut — ce n'est pas commercial de tout déballer, et ce n'est pas non plus notre rôle de dresser un inventaire. " +
+  "Réponds plutôt de façon chaleureuse et stratégique, en donnant 1 ou 2 exemples de catégories phares (pas une liste exhaustive), puis pose une question qui pousse le client à préciser ce qu'il cherche (ex : \"Nous avons de belles pièces en robes, vestes et accessoires ! Vous cherchez quelque chose en particulier pour une occasion précise ?\"). " +
+  "Dès que le client précise un type d'article ou un produit précis, réponds normalement avec les vraies infos (prix, disponibilité) de ce produit précis.";
+
 const REGLE_ALTERNATIVE_RUPTURE =
   "\n\nIMPORTANT - Rebond commercial sur rupture de stock : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue), ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
   "RÈGLE STRICTE ET ABSOLUE : ton message final ne doit citer le NOM que d'UN SEUL autre article, jamais deux, jamais trois — même si plusieurs articles similaires (même catégorie, ex: plusieurs vestes ou plusieurs robes) sont disponibles dans le catalogue. Choisir entre plusieurs candidats n'est jamais une raison de les citer tous : sélectionne le plus proche en catégorie et en prix, et NE MENTIONNE QUE CELUI-LÀ, par son nom exact. " +
@@ -1932,7 +1938,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
 
@@ -2037,7 +2043,7 @@ app.post('/demo', async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
     const reply = await askClaude(historiquePourAppel, systemPrompt);
