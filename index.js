@@ -629,6 +629,46 @@ async function sendAlerteTemplate(fromPhoneNumberId, to, nomCommerce, texteAlert
   return response.json();
 }
 
+/**
+ * Envoie le rappel de recharge de ligne via le template Meta approuvé
+ * "rappel_recharge_ligne". Le risque vient de l'opérateur (réattribution du
+ * numéro faute de recharge), pas de NTA — le texte du template le précise.
+ */
+async function sendRappelRechargeTemplate(fromPhoneNumberId, to, nomCommerce) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'template',
+      template: {
+        name: 'rappel_recharge_ligne',
+        language: { code: 'fr' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nettoyerParametreTemplate(nomCommerce) },
+          ],
+        }],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi template rappel recharge Meta:', response.status, errText);
+    throw new Error(`Meta API (template rappel recharge) a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
+}
+
 // ─── IMAGES (RÉCEPTION PHOTO CLIENT + COMPARAISON CATALOGUE) ─────────────────
 //
 // Quand un client final envoie une photo (ex: capture d'un produit vu sur les
@@ -1496,6 +1536,45 @@ async function resetQuotasVocalAnniversaire() {
 // pour que le quota soit déjà rechargé si un client écrit dès l'aube.
 cron.schedule('0 5 * * *', () => {
   resetQuotasVocalAnniversaire();
+});
+
+// ─── RAPPEL RECHARGE LIGNE (TOUS LES 2 MOIS) ──────────────────────────────────
+//
+// Boucle sur chaque commerçant actif et envoie un rappel sur son numero_
+// proprietaire pour recharger la ligne rattachée à son bot, sous peine que
+// l'opérateur réattribue le numéro faute d'activité — risque indépendant de
+// l'abonnement NTA, précisé dans le texte du template lui-même.
+
+async function envoyerRappelsRechargeLigne() {
+  console.log('--- Déclenchement des rappels de recharge de ligne ---');
+
+  const merchants = await getMerchantsActifs();
+  if (merchants.length === 0) {
+    console.log('Aucun commerçant actif trouvé.');
+    return;
+  }
+
+  for (const merchant of merchants) {
+    const { phone_number_id, nom_commerce, numero_proprietaire } = merchant;
+
+    if (!numero_proprietaire) {
+      console.log(`Rappel recharge ignoré pour ${nom_commerce} : numero_proprietaire manquant.`);
+      continue;
+    }
+
+    try {
+      await sendRappelRechargeTemplate(phone_number_id, numero_proprietaire, nom_commerce);
+      console.log(`Rappel recharge ligne envoyé avec succès pour ${nom_commerce} !`);
+    } catch (err) {
+      console.error(`Erreur rappel recharge ligne pour ${nom_commerce} :`, err.message);
+    }
+  }
+}
+
+// Le 1er de chaque mois impair (janvier, mars, mai, juillet, septembre,
+// novembre) à 9h — équivaut à un envoi tous les 2 mois.
+cron.schedule('0 9 1 1,3,5,7,9,11 *', () => {
+  envoyerRappelsRechargeLigne();
 });
 
 // ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
