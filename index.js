@@ -40,7 +40,8 @@ const MAX_HISTORY = 20;
 const MAX_HISTORY_ENVOYE_A_CLAUDE = 10;
 
 const REGLE_FORMATAGE_WHATSAPP =
-  "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_).";
+  "\n\nIMPORTANT - Format du texte : WhatsApp utilise UN SEUL astérisque pour le gras (*comme ceci*), jamais deux. N'utilise JAMAIS le format **comme ceci** (style Markdown classique), cela affiche des étoiles parasites et gêne la lecture. Pour l'italique, WhatsApp utilise un seul underscore (_comme ceci_). " +
+  "IMPORTANT - Élisions (l', d', n', qu', j', etc.) : WhatsApp exige un espace ou un début de mot juste avant l'astérisque pour reconnaître le gras. Si l'astérisque est collé directement après une apostrophe d'élision (ex : \"L'*heure*\", \"qu'*il*\"), WhatsApp NE reconnaît PAS le gras et affiche les astérisques tels quels comme du texte parasite. Dans ce cas, n'utilise JAMAIS le gras sur le mot juste après l'élision — soit tu reformules pour englober le mot entier avec son article (ex : \"*l'heure*\" en mettant l'astérisque avant le \"l\" et non après l'apostrophe), soit tu laisses simplement le mot sans gras.";
 
 const REGLE_EMOTICONES =
   "\n\nIMPORTANT - Usage des émoticônes : N'utilise PAS d'émoticône de sourire/rire (😁😅😂🤣😄😃😀☺️😊😆ou similaire) à chaque phrase ou à chaque paragraphe. Tu n'es pas obligé d'en mettre une dans chaque message. Utilise au maximum UNE SEULE émoticône de ce type par message entier, et seulement quand elle apporte vraiment quelque chose. Privilégie les mots pour exprimer la sympathie plutôt que les émoticônes répétées. En revanche, les émoticônes qui illustrent un produit ou un objet concret (vêtements, accessoires, etc., comme 👗 👔 👠 🛍️) restent libres et ne sont pas concernées par cette limite.";
