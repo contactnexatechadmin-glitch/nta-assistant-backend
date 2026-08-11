@@ -53,9 +53,10 @@ const REGLE_PRECISION_EMOJI_PRODUIT =
   "Si le type exact du produit n'est pas clair ou ne correspond à aucune de ces catégories précises, utilise l'émoticône générique 🛍️ plutôt que de deviner une émoticône qui pourrait être fausse.";
 
 const REGLE_CONFIRMATION_COMMANDE =
-  "\n\nIMPORTANT - Confirmation de commande : quand un client a fini de préciser ce qu'il veut acheter (produit, adresse, heure de livraison), fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
+  "\n\nIMPORTANT - Confirmation de commande : avant de pouvoir récapituler une commande, tu DOIS avoir obtenu du client ces 3 informations précises, jamais moins : (1) le produit, (2) l'adresse de livraison, (3) le JOUR/DATE ET l'heure souhaités pour la livraison (jamais l'heure seule — demande toujours explicitement le jour si le client ne l'a donné que l'heure, ex : \"c'est pour aujourd'hui, demain, ou un autre jour ?\"). " +
+  "Une fois ces 3 informations obtenues, fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
   "Si le client répond ensuite positivement à cette question (oui, je confirme, d'accord, etc.) SANS apporter de correction ou changement au récapitulatif, commence OBLIGATOIREMENT ta réponse par exactement la phrase \"Commande confirmée !\" avant d'ajouter quoi que ce soit d'autre (même si le client enchaîne avec une autre question dans le même message). " +
-  "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas répondu positivement à la question de confirmation, ou s'il est en train de corriger/modifier sa commande. " +
+  "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas répondu positivement à la question de confirmation, s'il est en train de corriger/modifier sa commande, OU si le jour/date de livraison n'a pas été clairement précisé. " +
   "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
 
 const REGLE_ESCALADE =
@@ -1031,7 +1032,7 @@ async function extraireDetailsCommande(transcript) {
     "Analyse cet échange WhatsApp entre un client et un vendeur. Une commande vient d'être confirmée. " +
     "Extrait les détails de CETTE commande précise (la plus récente, celle qui vient d'être confirmée — pas une commande plus ancienne mentionnée plus tôt dans la conversation). " +
     "Réponds UNIQUEMENT avec un objet JSON compact, sans aucun texte autour : " +
-    "{\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque).";
+    "{\"produit\":\"...\",\"prix\":\"...\",\"adresse\":\"...\",\"date_livraison\":\"...\",\"heure_livraison\":\"...\"} (mets \"non précisé\" si une info manque). Le champ date_livraison doit contenir le jour/date (ex: \"aujourd'hui\", \"demain\", \"12 août\"), séparé de l'heure.";
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1052,7 +1053,7 @@ async function extraireDetailsCommande(transcript) {
 
     if (!response.ok) {
       console.error('🚨 Extraction détails commande — API Claude a répondu', response.status);
-      return { produit: 'non précisé', prix: 'non précisé', adresse: 'non précisé', heure_livraison: 'non précisé' };
+      return { produit: 'non précisé', prix: 'non précisé', adresse: 'non précisé', date_livraison: 'non précisé', heure_livraison: 'non précisé' };
     }
 
     const data = await response.json();
@@ -1060,7 +1061,7 @@ async function extraireDetailsCommande(transcript) {
     return JSON.parse(raw);
   } catch (err) {
     console.error('🚨 Extraction détails commande échouée (vérifier manuellement) :', err.message);
-    return { produit: 'non précisé', prix: 'non précisé', adresse: 'non précisé', heure_livraison: 'non précisé' };
+    return { produit: 'non précisé', prix: 'non précisé', adresse: 'non précisé', date_livraison: 'non précisé', heure_livraison: 'non précisé' };
   }
 }
 
@@ -1094,7 +1095,7 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
   // dans la même conversation, on n'alerte pas deux fois pour LA MÊME commande.
   // Mais si les détails diffèrent (même le même jour), c'est une nouvelle
   // commande — le client peut très bien commander plusieurs fois par jour.
-  const signatureNouvelle = `${detection.produit || ''}|${detection.adresse || ''}|${detection.heure_livraison || ''}`;
+  const signatureNouvelle = `${detection.produit || ''}|${detection.adresse || ''}|${detection.date_livraison || ''}|${detection.heure_livraison || ''}`;
   const signaturePrecedente = profile?.derniere_commande_alertee || '';
 
   if (signatureNouvelle === signaturePrecedente) {
@@ -1113,7 +1114,7 @@ async function detecterEtAlerterCommande(sessionId, merchant, from, history, rep
     `Produit : ${detection.produit || 'non précisé'}\n` +
     `Prix : ${detection.prix || 'non précisé'}\n` +
     `Adresse : ${detection.adresse || 'non précisée'}\n` +
-    `Livraison souhaitée : ${detection.heure_livraison || 'non précisée'}\n\n` +
+    `Livraison souhaitée : ${detection.date_livraison || 'non précisée'} vers ${detection.heure_livraison || 'non précisée'}\n\n` +
     `Pense à confirmer et organiser la livraison.`;
 
   await sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteAlerte);
@@ -1134,6 +1135,7 @@ async function enregistrerCommande(merchant, from, detection) {
     produit: detection.produit || null,
     prix_estime: detection.prix || null,
     adresse_livraison: detection.adresse || null,
+    date_livraison_souhaitee: detection.date_livraison || null,
     heure_livraison_souhaitee: detection.heure_livraison || null,
     nom_commerce: merchant.nom_commerce,
   }]);
