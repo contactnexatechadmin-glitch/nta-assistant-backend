@@ -61,8 +61,9 @@ const REGLE_CONFIRMATION_COMMANDE =
 
 const REGLE_ESCALADE =
   "\n\nIMPORTANT - Honnêteté et escalade vers le commerçant : tu es un assistant 100% autonome, aucun humain ne reprend la conversation derrière toi. Ne prétends JAMAIS \"vérifier le stock\", \"consulter l'équipe\" ou \"revenir vers le client\" si tu ne peux pas le faire toi-même — c'est un mensonge. " +
-  "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions (prix, stock, détail non fourni), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
-  "N'utilise cette phrase exacte QUE dans ces trois cas précis, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
+  "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions ET n'est PAS liée à un article absent du catalogue (ex : condition de livraison non précisée, détail non fourni — voir exception ci-dessous), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
+  "IMPORTANT - Exception : article absent du catalogue : si le client demande un article qui n'existe PAS du tout dans le catalogue (jamais enregistré — différent d'une rupture de stock d'un article existant), ce N'EST JAMAIS un cas d'escalade. Applique exactement le même traitement qu'une rupture de stock (voir la règle sur le rebond commercial ci-dessous) : propose UNE SEULE alternative proche si le catalogue en contient une, sinon dis simplement et normalement au client que tu ne l'as pas. N'utilise JAMAIS la phrase d'escalade pour ce cas précis. " +
+  "N'utilise la phrase d'escalade exacte QUE dans les trois cas listés plus haut, jamais ailleurs, et jamais pour une simple question à laquelle tu sais répondre ou un client simplement impatient (dans ce dernier cas, rassure-le toi-même avec empathie, sans escalader).";
 
 const REGLE_POLITESSE_SALUTATION =
   "\n\nIMPORTANT - Politesse et salutation : si le message du client contient une salutation (bonjour, bonsoir, salut, etc.), réponds-y TOUJOURS brièvement et chaleureusement avant d'enchaîner sur le sujet commercial — SANS AUCUNE EXCEPTION. " +
@@ -80,10 +81,14 @@ const REGLE_PAS_DE_LISTE_CATALOGUE =
   "Réponds plutôt de façon chaleureuse et stratégique, en donnant 1 ou 2 exemples de catégories phares (pas une liste exhaustive), puis pose une question qui pousse le client à préciser ce qu'il cherche (ex : \"Nous avons de belles pièces en robes, vestes et accessoires ! Vous cherchez quelque chose en particulier pour une occasion précise ?\"). " +
   "Dès que le client précise un type d'article ou un produit précis, réponds normalement avec les vraies infos (prix, disponibilité) de ce produit précis.";
 
+const REGLE_NUMEROTATION =
+  "\n\nIMPORTANT - Numérotation des listes : quand tu listes plusieurs éléments dans une même intervention (au client ou dans un bilan), n'utilise JAMAIS de sous-numérotation (1.1, 1.2, 2.1, 2.2...). Repars TOUJOURS sur une numérotation simple et continue : 1. 2. 3. 4..., chaque numéro sur sa propre ligne (saut de ligne avant chaque numéro) — même si cette liste se trouve après un intitulé non numéroté ou à l'intérieur d'un point plus large.";
+
 const REGLE_ALTERNATIVE_RUPTURE =
-  "\n\nIMPORTANT - Rebond commercial sur rupture de stock : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue), ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
+  "\n\nIMPORTANT - Rebond commercial sur rupture de stock OU article absent du catalogue : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue) OU n'existe pas du tout dans le catalogue, ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
   "RÈGLE STRICTE ET ABSOLUE : ton message final ne doit citer le NOM que d'UN SEUL autre article, jamais deux, jamais trois — même si plusieurs articles similaires (même catégorie, ex: plusieurs vestes ou plusieurs robes) sont disponibles dans le catalogue. Choisir entre plusieurs candidats n'est jamais une raison de les citer tous : sélectionne le plus proche en catégorie et en prix, et NE MENTIONNE QUE CELUI-LÀ, par son nom exact. " +
   "Mets cette unique alternative en avant clairement dans une vraie phrase commerciale naturelle et chaleureuse (jamais un dump brut du champ \"Détails visuels\", reformule toujours). " +
+  "IMPORTANT - Aucune alternative disponible : si le catalogue ne contient AUCUN article proche de ce que le client demande, ne force jamais une proposition hors sujet — dis simplement et naturellement au client que tu ne l'as pas, sans chercher à lui vendre autre chose. " +
   "Si le client demande ensuite à voir d'autres options, tu peux alors en proposer une deuxième différente — mais jamais plus d'une nouvelle alternative par message, jamais une liste groupée.";
 
 const REGLE_PHOTO_PRODUIT =
@@ -984,9 +989,9 @@ async function askClaudeReporting(transcript) {
     "2. Qui a CONFIRMÉ vouloir acheter et quoi (donne le numéro du client) — UNIQUEMENT si le client a exprimé une intention claire de finaliser (ex: \"je le prends\", \"je commande\", \"envoyez les détails de livraison\", a donné une adresse ou confirmé un paiement). " +
     "IMPORTANT : un client qui a SEULEMENT demandé un prix, un stock, ou une information, SANS confirmer vouloir acheter, n'est PAS un client prêt à acheter — dis plutôt qu'il \"s'est renseigné sur le prix\" ou \"a montré de l'intérêt sans confirmer\", ne dis jamais qu'il est \"prêt à commander\" dans ce cas. " +
     "Si aucun client n'a confirmé d'achat, dis-le clairement plutôt que d'exagérer une simple demande de prix. " +
-    "3. Le produit le plus demandé. " +
-    "FORMAT OBLIGATOIRE : numérote 1., 2., 3. chacun sur sa PROPRE ligne (saut de ligne avant chaque numéro), jamais les trois à la suite sur une seule ligne." +
-    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT;
+    "3. Le produit le plus demandé — UNIQUEMENT si un même produit a été demandé au moins 2 fois par des clients DIFFÉRENTS dans la journée. Si cette condition n'est pas remplie (aucun produit demandé au moins 2 fois par des clients différents), N'ÉCRIS RIEN à ce sujet : pas de point 3, pas de phrase de substitution, ton bilan s'arrête alors au point 2. " +
+    "FORMAT OBLIGATOIRE : numérote chaque point réellement présent (1., 2., et 3. seulement si sa condition est remplie), chacun sur sa PROPRE ligne (saut de ligne avant chaque numéro), jamais deux points à la suite sur une seule ligne." +
+    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT + REGLE_NUMEROTATION;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1242,7 +1247,7 @@ async function detecterEtAlerterEscalade(sessionId, merchant, from, history, rep
     `⚠️ *${libelle} — ${merchant.nom_commerce}*\n\n` +
     `Client : ${from}\n` +
     `Résumé : ${detection.resume || 'non précisé'}\n\n` +
-    `Le bot a informé le client que vous seriez tenu au courant.`;
+    `J'ai prévenu le client que vous serez informé de la situation.`;
 
   await sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteAlerte);
   await saveClientProfile(sessionId, { derniere_escalade_alertee: signatureNouvelle });
@@ -1393,7 +1398,7 @@ async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemaine
     "Utilise TOUJOURS un vocabulaire prudent : \"environ\", \"à peu près\", \"estimation\", jamais de chiffre présenté comme certain ou définitif. " +
     "Compare à la semaine précédente (en hausse / en baisse / stable) si les deux chiffres sont disponibles. " +
     "Mentionne le produit le plus demandé de la semaine." +
-    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT;
+    REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT + REGLE_NUMEROTATION;
 
   const contenu = `Commerce : ${nomCommerce}
 Cette semaine : environ ${statsSemaine.nombre} commande(s) confirmée(s), chiffre d'affaires estimé à environ ${statsSemaine.chiffreAffaires} FCFA, produit le plus demandé : ${statsSemaine.produitTop || 'aucun'}.
@@ -1942,7 +1947,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
 
@@ -2047,7 +2052,7 @@ app.post('/demo', async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
     const reply = await askClaude(historiquePourAppel, systemPrompt);
