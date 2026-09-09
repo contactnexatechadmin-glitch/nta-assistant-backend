@@ -2059,6 +2059,21 @@ app.post('/demo', async (req, res) => {
   }
 });
 
+// ─── KEEP-ALIVE SUPABASE ────────────────────────────────────────────────────
+// Route appelée périodiquement par un cron externe (cron-job.org) pour simuler
+// de l'activité sur la BDD et éviter la mise en pause automatique du projet
+// Supabase (plan gratuit) après 1 semaine d'inactivité.
+app.get('/ping-db', async (req, res) => {
+  try {
+    const { error } = await supabase.from('merchants').select('id').limit(1);
+    if (error) throw error;
+    res.status(200).json({ status: 'ok', message: 'Supabase pingé avec succès' });
+  } catch (err) {
+    console.error('🚨 Erreur ping-db:', err.message);
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 // ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
