@@ -1346,7 +1346,7 @@ async function envoyerBilanQuotidien() {
   return { envoye: true, details: resultats };
 }
 
-cron.schedule('0 18 * * *', () => {
+cron.schedule('30 20 * * *', () => {
   envoyerBilanQuotidien();
 });
 
