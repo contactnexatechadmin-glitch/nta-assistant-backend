@@ -53,8 +53,8 @@ const REGLE_PRECISION_EMOJI_PRODUIT =
   "Si le type exact du produit n'est pas clair ou ne correspond à aucune de ces catégories précises, utilise l'émoticône générique 🛍️ plutôt que de deviner une émoticône qui pourrait être fausse.";
 
 const REGLE_CONFIRMATION_COMMANDE =
-  "\n\nIMPORTANT - Confirmation de commande : avant de pouvoir récapituler une commande, tu DOIS avoir obtenu du client ces 3 informations précises, jamais moins : (1) le produit, (2) l'adresse de livraison, (3) le JOUR/DATE ET l'heure souhaités pour la livraison (jamais l'heure seule — demande toujours explicitement le jour si le client ne l'a donné que l'heure, ex : \"c'est pour aujourd'hui, demain, ou un autre jour ?\"). " +
-  "Une fois ces 3 informations obtenues, fais un récapitulatif clair de CETTE commande précise, puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
+  "\n\nIMPORTANT - Confirmation de commande : avant de pouvoir récapituler une commande, tu DOIS avoir obtenu du client ces 4 informations précises, jamais moins : (1) le produit, (2) le prix exact du produit tel qu'indiqué dans le catalogue (jamais un prix approximatif ou négocié sans validation via l'alerte prévue), (3) l'adresse de livraison, (4) le JOUR/DATE ET l'heure souhaités pour la livraison (jamais l'heure seule — demande toujours explicitement le jour si le client ne l'a donné que l'heure, ex : \"c'est pour aujourd'hui, demain, ou un autre jour ?\"). " +
+  "Une fois ces 4 informations obtenues, fais un récapitulatif clair de CETTE commande précise — en incluant TOUJOURS le prix dans ce récapitulatif — puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
   "Si le client répond ensuite positivement à cette question (oui, je confirme, d'accord, etc.) SANS apporter de correction ou changement au récapitulatif, commence OBLIGATOIREMENT ta réponse par exactement la phrase \"Commande confirmée !\" avant d'ajouter quoi que ce soit d'autre (même si le client enchaîne avec une autre question dans le même message). " +
   "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas répondu positivement à la question de confirmation, s'il est en train de corriger/modifier sa commande, OU si le jour/date de livraison n'a pas été clairement précisé. " +
   "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
@@ -83,6 +83,11 @@ const REGLE_PAS_DE_LISTE_CATALOGUE =
 
 const REGLE_NUMEROTATION =
   "\n\nIMPORTANT - Numérotation des listes : quand tu listes plusieurs éléments dans une même intervention (au client ou dans un bilan), n'utilise JAMAIS de sous-numérotation (1.1, 1.2, 2.1, 2.2...). Repars TOUJOURS sur une numérotation simple et continue : 1. 2. 3. 4..., chaque numéro sur sa propre ligne (saut de ligne avant chaque numéro) — même si cette liste se trouve après un intitulé non numéroté ou à l'intérieur d'un point plus large.";
+
+const REGLE_DEMANDE_PHOTO_AVANT_CONCLURE =
+  "\n\nIMPORTANT - Proposer une photo avant de conclure à l'absence d'un article (jamais bloquant) : quand le client décrit un article avec ses propres mots (ex : \"robe décontractée\", \"pantalon simple\") et qu'aucun article du catalogue ne semble correspondre PAR LE SENS (pas seulement par mot-clé exact — vérifie d'abord si un article existant correspond à l'esprit de la demande même si le mot précis n'y figure pas), propose D'ABORD au client de t'envoyer une photo, avec une phrase naturelle et chaleureuse (ex : \"Pourriez-vous m'envoyer une photo de ce que vous recherchez, pour que je vous trouve la pièce parfaite ?\"). " +
+  "Cette demande n'est JAMAIS une condition bloquante : si le client répond qu'il n'a pas de photo, ignore la demande, change de sujet, ou insiste pour une réponse immédiate, passe TOUT DE SUITE à la règle de rebond commercial ci-dessous (une seule alternative proche, ou aveu honnête si rien ne colle) — ne redemande jamais une photo une deuxième fois, ne fais jamais attendre le client. " +
+  "Si une photo est envoyée et analysée : si elle correspond à un article du catalogue (même décrit différemment), propose-le normalement avec ses vraies infos. Si elle ne correspond vraiment à rien, applique la règle de rebond commercial ci-dessous.";
 
 const REGLE_ALTERNATIVE_RUPTURE =
   "\n\nIMPORTANT - Rebond commercial sur rupture de stock OU article absent du catalogue : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue) OU n'existe pas du tout dans le catalogue, ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
@@ -1947,7 +1952,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
 
@@ -2052,7 +2057,7 @@ app.post('/demo', async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
     const reply = await askClaude(historiquePourAppel, systemPrompt);
