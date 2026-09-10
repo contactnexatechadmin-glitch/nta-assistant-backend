@@ -93,8 +93,9 @@ const REGLE_ALTERNATIVE_RUPTURE =
   "\n\nIMPORTANT - Rebond commercial sur rupture de stock OU article absent du catalogue : quand un article demandé par le client est en rupture ([RUPTURE] dans le catalogue) OU n'existe pas du tout dans le catalogue, ne propose JAMAIS plusieurs alternatives à la fois, et ne dis jamais une phrase vague au pluriel comme \"je vous montre d'autres articles\". " +
   "RÈGLE STRICTE ET ABSOLUE : ton message final ne doit citer le NOM que d'UN SEUL autre article, jamais deux, jamais trois — même si plusieurs articles similaires (même catégorie, ex: plusieurs vestes ou plusieurs robes) sont disponibles dans le catalogue. Choisir entre plusieurs candidats n'est jamais une raison de les citer tous : sélectionne le plus proche en catégorie et en prix, et NE MENTIONNE QUE CELUI-LÀ, par son nom exact. " +
   "Mets cette unique alternative en avant clairement dans une vraie phrase commerciale naturelle et chaleureuse (jamais un dump brut du champ \"Détails visuels\", reformule toujours). " +
-  "IMPORTANT - Aucune alternative disponible : si le catalogue ne contient AUCUN article proche de ce que le client demande, ne force jamais une proposition hors sujet — dis simplement et naturellement au client que tu ne l'as pas, sans chercher à lui vendre autre chose. " +
+  "IMPORTANT - Aucune alternative disponible : si le catalogue ne contient AUCUN article proche de ce que le client demande, ne force jamais une proposition hors sujet — dis simplement et naturellement au client que tu ne l'as pas, sans chercher à lui vendre autre chose. Dans ce cas précis uniquement (aucune alternative trouvée), termine ta réponse par une ligne séparée, exactement au format : ARTICLE_NON_TROUVE: terme utilisé par le client — en reprenant le terme le plus proche de ce que le client a réellement demandé (ex: \"robe décontractée\"), jamais reformulé. Cette ligne est un signal technique invisible pour le client (retirée avant l'envoi) : ne l'explique jamais, n'y fais jamais référence. Ne mets JAMAIS cette ligne si tu as proposé une alternative. " +
   "Si le client demande ensuite à voir d'autres options, tu peux alors en proposer une deuxième différente — mais jamais plus d'une nouvelle alternative par message, jamais une liste groupée.";
+
 
 const REGLE_PHOTO_PRODUIT =
   "\n\nIMPORTANT - Tag photo produit : quand — et UNIQUEMENT quand — tu viens de recommander UNE SEULE alternative précise suite à une rupture de stock (voir règle ci-dessus), termine ta réponse par une ligne séparée, exactement au format : PHOTO_PRODUIT: NomExactDuProduit — en reprenant le nom EXACT tel qu'il apparaît après \"Produit :\" dans le catalogue ci-dessous. " +
@@ -844,6 +845,39 @@ function extraireTagPhotoProduit(texte) {
   };
 }
 
+// ─── TAG ARTICLE_NON_TROUVE (REMONTÉE BILAN, PRODUITS MANQUANTS) ──────────────
+//
+// Quand Claude n'a trouvé AUCUNE alternative à proposer (voir REGLE_ALTERNATIVE_
+// RUPTURE), il termine sa réponse par "ARTICLE_NON_TROUVE: terme". Ce tag n'est
+// jamais montré au client : on le retire du texte avant envoi/sauvegarde, puis
+// on logue le terme dans Supabase pour qu'il remonte dans les bilans quotidien
+// et hebdomadaire du commerçant (aucune alerte immédiate — voir REGLE_ESCALADE).
+
+function extraireTagArticleNonTrouve(texte) {
+  if (!texte) return { texteNettoye: texte, termeNonTrouve: null };
+
+  const regex = /\n*ARTICLE_NON_TROUVE\s*:\s*(.+?)\s*$/i;
+  const match = texte.match(regex);
+  if (!match) return { texteNettoye: texte, termeNonTrouve: null };
+
+  return {
+    texteNettoye: texte.slice(0, match.index).trim(),
+    termeNonTrouve: match[1].trim(),
+  };
+}
+
+async function logArticleNonTrouve(phoneNumberId, terme) {
+  if (!terme) return;
+  const { error } = await supabase.from('demandes_non_trouvees').insert([{
+    phone_number_id: phoneNumberId,
+    terme: terme,
+  }]);
+  if (error) {
+    console.error(`🚨 Erreur log article non trouvé ("${terme}") :`, error.message);
+  }
+}
+
+
 /**
  * Retrouve la fiche produit correspondant au nom donné par le tag. Recherche
  * d'abord une correspondance exacte (insensible à la casse), puis en dernier
@@ -994,8 +1028,9 @@ async function askClaudeReporting(transcript) {
     "2. Qui a CONFIRMÉ vouloir acheter et quoi (donne le numéro du client) — UNIQUEMENT si le client a exprimé une intention claire de finaliser (ex: \"je le prends\", \"je commande\", \"envoyez les détails de livraison\", a donné une adresse ou confirmé un paiement). " +
     "IMPORTANT : un client qui a SEULEMENT demandé un prix, un stock, ou une information, SANS confirmer vouloir acheter, n'est PAS un client prêt à acheter — dis plutôt qu'il \"s'est renseigné sur le prix\" ou \"a montré de l'intérêt sans confirmer\", ne dis jamais qu'il est \"prêt à commander\" dans ce cas. " +
     "Si aucun client n'a confirmé d'achat, dis-le clairement plutôt que d'exagérer une simple demande de prix. " +
-    "3. Le produit le plus demandé — UNIQUEMENT si un même produit a été demandé au moins 2 fois par des clients DIFFÉRENTS dans la journée. Si cette condition n'est pas remplie (aucun produit demandé au moins 2 fois par des clients différents), N'ÉCRIS RIEN à ce sujet : pas de point 3, pas de phrase de substitution, ton bilan s'arrête alors au point 2. " +
-    "FORMAT OBLIGATOIRE : numérote chaque point réellement présent (1., 2., et 3. seulement si sa condition est remplie), chacun sur sa PROPRE ligne (saut de ligne avant chaque numéro), jamais deux points à la suite sur une seule ligne." +
+    "3. Le produit le plus demandé — UNIQUEMENT si un même produit a été demandé au moins 2 fois par des clients DIFFÉRENTS dans la journée. Si cette condition n'est pas remplie (aucun produit demandé au moins 2 fois par des clients différents), N'ÉCRIS RIEN à ce sujet : pas de point 3, pas de phrase de substitution. " +
+    "4. Produits demandés mais indisponibles — UNIQUEMENT si le bot a clairement dit à un client ne pas avoir un article demandé (formule du type \"je ne l'ai pas\", sans alternative proposée). Liste le(s) produit(s) concerné(s), sans jugement. Si aucun cas de ce type dans la journée, N'ÉCRIS RIEN à ce sujet : pas de point 4, pas de phrase de substitution. " +
+    "FORMAT OBLIGATOIRE : numérote chaque point réellement présent (1., 2., 3. et 4. uniquement si leur condition respective est remplie), chacun sur sa PROPRE ligne (saut de ligne avant chaque numéro), jamais deux points à la suite sur une seule ligne." +
     REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT + REGLE_NUMEROTATION;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1393,21 +1428,59 @@ function calculerStats(commandes) {
 }
 
 /**
+ * Récupère les termes de produits demandés mais non trouvés sur une plage de
+ * jours (table `demandes_non_trouvees`, alimentée par logArticleNonTrouve /
+ * tag ARTICLE_NON_TROUVE), et retourne le top 3 par fréquence.
+ */
+async function recupererDemandesNonTrouvees(phoneNumberId, joursDebut) {
+  const debut = new Date();
+  debut.setHours(0, 0, 0, 0);
+  debut.setDate(debut.getDate() - joursDebut);
+
+  const { data, error } = await supabase
+    .from('demandes_non_trouvees')
+    .select('terme, created_at')
+    .eq('phone_number_id', phoneNumberId)
+    .gte('created_at', debut.toISOString());
+
+  if (error) {
+    console.error(`Erreur récupération demandes non trouvées pour ${phoneNumberId}:`, error.message);
+    return [];
+  }
+
+  const compteur = {};
+  for (const d of data || []) {
+    const terme = d.terme || 'non précisé';
+    compteur[terme] = (compteur[terme] || 0) + 1;
+  }
+
+  return Object.entries(compteur)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([terme, count]) => ({ terme, count }));
+}
+
+/**
  * Demande à Claude de reformuler les statistiques en un message WhatsApp
  * naturel et prudent (jamais de chiffre présenté comme certain).
  */
-async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemainePrecedente) {
+async function formulerBilanHebdomadaire(nomCommerce, statsSemaine, statsSemainePrecedente, demandesNonTrouvees) {
   const systemPrompt =
     "Tu es l'assistant de gestion d'un commerçant ivoirien. Rédige un bilan HEBDOMADAIRE en français, chaleureux et simple, en 4-5 phrases maximum. " +
     "IMPORTANT : ces chiffres viennent de commandes CONFIRMÉES par les clients via WhatsApp, mais on ne sait pas si elles ont toutes été réellement livrées et payées. " +
     "Utilise TOUJOURS un vocabulaire prudent : \"environ\", \"à peu près\", \"estimation\", jamais de chiffre présenté comme certain ou définitif. " +
     "Compare à la semaine précédente (en hausse / en baisse / stable) si les deux chiffres sont disponibles. " +
-    "Mentionne le produit le plus demandé de la semaine." +
+    "Mentionne le produit le plus demandé de la semaine. " +
+    "Si des produits demandés mais indisponibles au catalogue te sont donnés, mentionne-les brièvement à la fin comme une suggestion concrète d'enrichissement du catalogue (jamais comme un reproche). Si aucun n'est donné, n'en parle pas." +
     REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_PRECISION_EMOJI_PRODUIT + REGLE_NUMEROTATION;
+
+  const ligneDemandesNonTrouvees = demandesNonTrouvees.length > 0
+    ? `\nProduits demandés mais indisponibles cette semaine : ${demandesNonTrouvees.map((d) => `${d.terme} (${d.count}x)`).join(', ')}.`
+    : '';
 
   const contenu = `Commerce : ${nomCommerce}
 Cette semaine : environ ${statsSemaine.nombre} commande(s) confirmée(s), chiffre d'affaires estimé à environ ${statsSemaine.chiffreAffaires} FCFA, produit le plus demandé : ${statsSemaine.produitTop || 'aucun'}.
-Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chiffre d'affaires estimé à environ ${statsSemainePrecedente.chiffreAffaires} FCFA.`;
+Semaine précédente : environ ${statsSemainePrecedente.nombre} commande(s), chiffre d'affaires estimé à environ ${statsSemainePrecedente.chiffreAffaires} FCFA.${ligneDemandesNonTrouvees}`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1456,9 +1529,10 @@ async function envoyerBilanHebdomadaire() {
     }
 
     try {
-      const [commandesSemaine, commandesSemainePrecedente] = await Promise.all([
+      const [commandesSemaine, commandesSemainePrecedente, demandesNonTrouvees] = await Promise.all([
         recupererCommandes(phone_number_id, 6, 0),
         recupererCommandes(phone_number_id, 13, 6),
+        recupererDemandesNonTrouvees(phone_number_id, 6),
       ]);
 
       if (commandesSemaine.length === 0) {
@@ -1469,7 +1543,7 @@ async function envoyerBilanHebdomadaire() {
       const statsSemaine = calculerStats(commandesSemaine);
       const statsSemainePrecedente = calculerStats(commandesSemainePrecedente);
 
-      const bilan = await formulerBilanHebdomadaire(nom_commerce, statsSemaine, statsSemainePrecedente);
+      const bilan = await formulerBilanHebdomadaire(nom_commerce, statsSemaine, statsSemainePrecedente, demandesNonTrouvees);
 
       await sendBilanTemplate(phone_number_id, numero_proprietaire, nom_commerce, 'la semaine', bilan);
       console.log(`Bilan hebdomadaire envoyé avec succès pour ${nom_commerce} !`);
@@ -1978,7 +2052,15 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     }
     // Retire le tag technique PHOTO_PRODUIT (invisible pour le client) avant
     // toute sauvegarde ou envoi — voir REGLE_PHOTO_PRODUIT.
-    const { texteNettoye: reply, nomProduitPhoto } = extraireTagPhotoProduit(replyBrut);
+    const { texteNettoye: replyIntermediaire, nomProduitPhoto } = extraireTagPhotoProduit(replyBrut);
+
+    // Retire le tag technique ARTICLE_NON_TROUVE (invisible pour le client) et
+    // logue le terme manqué en arrière-plan (non bloquant) — voir REGLE_
+    // ALTERNATIVE_RUPTURE et le commentaire au-dessus de logArticleNonTrouve.
+    const { texteNettoye: reply, termeNonTrouve } = extraireTagArticleNonTrouve(replyIntermediaire);
+    if (termeNonTrouve) {
+      logArticleNonTrouve(merchant.phone_number_id, termeNonTrouve).catch(() => {});
+    }
 
     await saveMessageToSupabase(sessionId, 'assistant', reply);
 
@@ -2060,7 +2142,11 @@ app.post('/demo', async (req, res) => {
     const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
-    const reply = await askClaude(historiquePourAppel, systemPrompt);
+    const replyBrutDemo = await askClaude(historiquePourAppel, systemPrompt);
+    // Retire le tag technique ARTICLE_NON_TROUVE (jamais montré, même en démo) —
+    // voir REGLE_ALTERNATIVE_RUPTURE. Pas de log Supabase ici : la démo n'est
+    // pas un vrai commerçant.
+    const { texteNettoye: reply } = extraireTagArticleNonTrouve(replyBrutDemo);
     await saveMessageToSupabase(sessionId, 'assistant', reply);
     res.json({ reply });
   } catch (err) {
