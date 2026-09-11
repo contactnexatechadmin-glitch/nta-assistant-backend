@@ -26,7 +26,72 @@ const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_APP_SECRET = process.env.META_APP_SECRET; // optionnel pour l'instant, à activer avant la prod réelle
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; // pour la transcription des notes vocales via Whisper (OpenRouter)
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+// ─── RÉSILIENCE SUPABASE (timeout + retry backoff exponentiel) ─────────────
+//
+// supabase-js passe par PostgREST en HTTP (pas de connexion Postgres directe
+// ni de pool à gérer côté Node). Le vrai risque en cas d'incident Supabase
+// (CONNECT_TIMEOUT / Gateway Timeout côté eux) est qu'une requête reste
+// bloquée en attente indéfiniment côté serveur Render. On injecte donc un
+// timeout explicite + un retry en backoff exponentiel directement dans le
+// fetch utilisé par le client Supabase : TOUS les appels (.from(), .rpc(),
+// .storage) en bénéficient automatiquement, sans modifier chaque fonction.
+
+const SUPABASE_TIMEOUT_MS = 8000; // au-delà, on considère la requête bloquée
+const SUPABASE_MAX_TENTATIVES = 3; // 1 essai initial + jusqu'à 3 retries
+const SUPABASE_DELAI_BASE_MS = 500; // backoff : 500ms, 1000ms, 2000ms
+
+function estErreurTransitoire(err, statusHttp) {
+  if ([502, 503, 504].includes(statusHttp)) return true;
+  const msg = (err && err.message || '').toLowerCase();
+  return (
+    err?.name === 'AbortError' ||
+    msg.includes('timeout') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('fetch failed') ||
+    msg.includes('gateway')
+  );
+}
+
+async function fetchSupabaseAvecRetry(url, options = {}) {
+  let derniereErreur;
+
+  for (let tentative = 0; tentative <= SUPABASE_MAX_TENTATIVES; tentative++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SUPABASE_TIMEOUT_MS);
+
+    try {
+      const reponse = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (estErreurTransitoire(null, reponse.status) && tentative < SUPABASE_MAX_TENTATIVES) {
+        const delai = SUPABASE_DELAI_BASE_MS * 2 ** tentative;
+        console.error(`🚨 Supabase a répondu ${reponse.status} — nouvelle tentative dans ${delai}ms (essai ${tentative + 1}/${SUPABASE_MAX_TENTATIVES})`);
+        await new Promise(r => setTimeout(r, delai));
+        continue;
+      }
+      return reponse;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      derniereErreur = err.name === 'AbortError'
+        ? new Error(`Timeout Supabase après ${SUPABASE_TIMEOUT_MS}ms (${url})`)
+        : err;
+
+      if (tentative < SUPABASE_MAX_TENTATIVES && estErreurTransitoire(derniereErreur)) {
+        const delai = SUPABASE_DELAI_BASE_MS * 2 ** tentative;
+        console.error(`🚨 Erreur réseau Supabase (${derniereErreur.message}) — nouvelle tentative dans ${delai}ms (essai ${tentative + 1}/${SUPABASE_MAX_TENTATIVES})`);
+        await new Promise(r => setTimeout(r, delai));
+        continue;
+      }
+      throw derniereErreur;
+    }
+  }
+  throw derniereErreur;
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  global: { fetch: fetchSupabaseAvecRetry },
+});
 
 const MESSAGE_ACCES_COUPE =
   "Merci pour votre message 🙏 Notre service de réponse automatique est temporairement indisponible. Veuillez nous contacter directement.";
@@ -2066,111 +2131,4 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
 
     // Extraction et mise à jour du profil en arrière-plan (non bloquant —
     // une info de confort manquée n'a pas de conséquence grave)
-    const historyForExtraction = [...history, { role: 'assistant', content: reply }];
-    extractAndUpdateProfile(sessionId, historyForExtraction).catch(() => {});
-
-    await sendWhatsAppMessage(phoneNumberId, from, reply);
-
-    // Envoi de la photo du produit recommandé, UNIQUEMENT si Claude a posé le
-    // tag PHOTO_PRODUIT et que ce produit a une photo enregistrée. Jamais plus
-    // d'une photo par réponse (un seul tag possible, une seule fiche trouvée).
-    if (nomProduitPhoto) {
-      const produitPhoto = trouverProduitParNom(catalogue, nomProduitPhoto);
-      if (produitPhoto?.image_url) {
-        try {
-          await envoyerImageWhatsApp(phoneNumberId, from, produitPhoto.image_url);
-        } catch (err) {
-          console.error(`🚨 Erreur envoi photo produit alternative (${nomProduitPhoto}) :`, err.message);
-        }
-      } else {
-        console.log(`Tag PHOTO_PRODUIT reçu pour "${nomProduitPhoto}" mais aucune photo enregistrée — poursuite en texte seul.`);
-      }
-    }
-
-    // Détection de commande confirmée + alerte immédiate au marchand.
-    // Contrairement à l'extraction de profil, on ATTEND ce résultat et on
-    // logue clairement (🚨) en cas d'échec — une commande manquée est une
-    // vente perdue, pas un détail de confort.
-    try {
-      await detecterEtAlerterCommande(sessionId, merchant, from, history, reply);
-    } catch (err) {
-      console.error(`🚨 Erreur alerte commande pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
-    }
-
-    // Détection d'escalade (info manquante, réclamation, négociation hors
-    // barème, client mécontent) + alerte immédiate au marchand.
-    try {
-      await detecterEtAlerterEscalade(sessionId, merchant, from, history, reply);
-    } catch (err) {
-      console.error(`🚨 Erreur alerte escalade pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
-    }
-  } catch (err) {
-    console.error('Erreur traitement webhook Meta:', err.message);
-  }
-});
-
-app.post('/demo', async (req, res) => {
-  const { message, sessionId } = req.body;
-  if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
-  try {
-    const merchant = await getMerchant(DEMO_PHONE_NUMBER_ID);
-    if (!merchant) return res.status(500).json({ error: 'Commerçant démo introuvable' });
-
-    await saveMessageToSupabase(sessionId, 'user', message);
-
-    const [history, profile, catalogue] = await Promise.all([
-      getHistoryFromSupabase(sessionId),
-      getClientProfile(sessionId),
-      getCatalogueProduits(DEMO_PHONE_NUMBER_ID),
-    ]);
-
-    // Garde-fou anti-abus : au-delà de MAX_MESSAGES_DEMO messages envoyés par
-    // ce visiteur, on ne fait plus AUCUN appel à Claude — on renvoie une
-    // réponse fixe qui redirige vers le vrai numéro WhatsApp. Le message du
-    // visiteur est déjà sauvegardé ci-dessus (pour garder une trace), mais le
-    // coût d'un appel Sonnet est évité.
-    const nombreMessagesClient = await compterMessagesUtilisateurDemo(sessionId);
-    if (nombreMessagesClient > MAX_MESSAGES_DEMO) {
-      await saveMessageToSupabase(sessionId, 'assistant', MESSAGE_LIMITE_DEMO_ATTEINTE);
-      return res.json({ reply: MESSAGE_LIMITE_DEMO_ATTEINTE });
-    }
-
-    const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
-    const profileLine = formatProfileForPrompt(profile);
-    const catalogueLine = formatCatalogueForPrompt(catalogue);
-    const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
-
-    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
-    const replyBrutDemo = await askClaude(historiquePourAppel, systemPrompt);
-    // Retire le tag technique ARTICLE_NON_TROUVE (jamais montré, même en démo) —
-    // voir REGLE_ALTERNATIVE_RUPTURE. Pas de log Supabase ici : la démo n'est
-    // pas un vrai commerçant.
-    const { texteNettoye: reply } = extraireTagArticleNonTrouve(replyBrutDemo);
-    await saveMessageToSupabase(sessionId, 'assistant', reply);
-    res.json({ reply });
-  } catch (err) {
-    console.error('Erreur route /demo:', err.message);
-    res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-// ─── KEEP-ALIVE SUPABASE ────────────────────────────────────────────────────
-// Route appelée périodiquement par un cron externe (cron-job.org) pour simuler
-// de l'activité sur la BDD et éviter la mise en pause automatique du projet
-// Supabase (plan gratuit) après 1 semaine d'inactivité.
-app.get('/ping-db', async (req, res) => {
-  try {
-    const { error } = await supabase.from('merchants').select('id').limit(1);
-    if (error) throw error;
-    res.status(200).json({ status: 'ok', message: 'Supabase pingé avec succès' });
-  } catch (err) {
-    console.error('🚨 Erreur ping-db:', err.message);
-    res.status(500).json({ status: 'error', message: err.message });
-  }
-});
-
-// ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Serveur lancé sur le port ${PORT}`));
+    const historyForExtraction = [...history, { role: 'assistant', 
