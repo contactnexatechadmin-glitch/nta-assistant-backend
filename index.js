@@ -2131,4 +2131,112 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
 
     // Extraction et mise à jour du profil en arrière-plan (non bloquant —
     // une info de confort manquée n'a pas de conséquence grave)
-    const historyForExtraction = [...history, { role: 'assistant', 
+    const historyForExtraction = [...history, { role: 'assistant', content: reply }];
+    extractAndUpdateProfile(sessionId, historyForExtraction).catch(() => {});
+
+    await sendWhatsAppMessage(phoneNumberId, from, reply);
+
+    // Envoi de la photo du produit recommandé, UNIQUEMENT si Claude a posé le
+    // tag PHOTO_PRODUIT et que ce produit a une photo enregistrée. Jamais plus
+    // d'une photo par réponse (un seul tag possible, une seule fiche trouvée).
+    if (nomProduitPhoto) {
+      const produitPhoto = trouverProduitParNom(catalogue, nomProduitPhoto);
+      if (produitPhoto?.image_url) {
+        try {
+          await envoyerImageWhatsApp(phoneNumberId, from, produitPhoto.image_url);
+        } catch (err) {
+          console.error(`🚨 Erreur envoi photo produit alternative (${nomProduitPhoto}) :`, err.message);
+        }
+      } else {
+        console.log(`Tag PHOTO_PRODUIT reçu pour "${nomProduitPhoto}" mais aucune photo enregistrée — poursuite en texte seul.`);
+      }
+    }
+
+    // Détection de commande confirmée + alerte immédiate au marchand.
+    // Contrairement à l'extraction de profil, on ATTEND ce résultat et on
+    // logue clairement (🚨) en cas d'échec — une commande manquée est une
+    // vente perdue, pas un détail de confort.
+    try {
+      await detecterEtAlerterCommande(sessionId, merchant, from, history, reply);
+    } catch (err) {
+      console.error(`🚨 Erreur alerte commande pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
+    }
+
+    // Détection d'escalade (info manquante, réclamation, négociation hors
+    // barème, client mécontent) + alerte immédiate au marchand.
+    try {
+      await detecterEtAlerterEscalade(sessionId, merchant, from, history, reply);
+    } catch (err) {
+      console.error(`🚨 Erreur alerte escalade pour ${merchant.nom_commerce} (${sessionId}) :`, err.message);
+    }
+  } catch (err) {
+    console.error('Erreur traitement webhook Meta:', err.message);
+  }
+});
+
+app.post('/demo', async (req, res) => {
+  const { message, sessionId } = req.body;
+  if (!message || !sessionId) return res.status(400).json({ error: 'message et sessionId requis' });
+  try {
+    const merchant = await getMerchant(DEMO_PHONE_NUMBER_ID);
+    if (!merchant) return res.status(500).json({ error: 'Commerçant démo introuvable' });
+
+    await saveMessageToSupabase(sessionId, 'user', message);
+
+    const [history, profile, catalogue] = await Promise.all([
+      getHistoryFromSupabase(sessionId),
+      getClientProfile(sessionId),
+      getCatalogueProduits(DEMO_PHONE_NUMBER_ID),
+    ]);
+
+    // Garde-fou anti-abus : au-delà de MAX_MESSAGES_DEMO messages envoyés par
+    // ce visiteur, on ne fait plus AUCUN appel à Claude — on renvoie une
+    // réponse fixe qui redirige vers le vrai numéro WhatsApp. Le message du
+    // visiteur est déjà sauvegardé ci-dessus (pour garder une trace), mais le
+    // coût d'un appel Sonnet est évité.
+    const nombreMessagesClient = await compterMessagesUtilisateurDemo(sessionId);
+    if (nombreMessagesClient > MAX_MESSAGES_DEMO) {
+      await saveMessageToSupabase(sessionId, 'assistant', MESSAGE_LIMITE_DEMO_ATTEINTE);
+      return res.json({ reply: MESSAGE_LIMITE_DEMO_ATTEINTE });
+    }
+
+    const basePrompt = merchant.system_prompt || SYSTEM_WHATSAPP_BASE;
+    const profileLine = formatProfileForPrompt(profile);
+    const catalogueLine = formatCatalogueForPrompt(catalogue);
+    const ligneStatutTemps = formatDateHeureAbidjan();
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
+
+    const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
+    const replyBrutDemo = await askClaude(historiquePourAppel, systemPrompt);
+    // Retire le tag technique ARTICLE_NON_TROUVE (jamais montré, même en démo) —
+    // voir REGLE_ALTERNATIVE_RUPTURE. Pas de log Supabase ici : la démo n'est
+    // pas un vrai commerçant.
+    const { texteNettoye: reply } = extraireTagArticleNonTrouve(replyBrutDemo);
+    await saveMessageToSupabase(sessionId, 'assistant', reply);
+    res.json({ reply });
+  } catch (err) {
+    console.error('Erreur route /demo:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ─── KEEP-ALIVE SUPABASE ────────────────────────────────────────────────────
+// Route appelée périodiquement par un cron externe (cron-job.org) pour simuler
+// de l'activité sur la BDD et éviter la mise en pause automatique du projet
+// Supabase (plan gratuit) après 1 semaine d'inactivité.
+app.get('/ping-db', async (req, res) => {
+  const debut = Date.now();
+  try {
+    const { error } = await supabase.from('merchants').select('id').limit(1);
+    if (error) throw error;
+    res.status(200).json({ status: 'ok', message: 'Supabase pingé avec succès', duree_ms: Date.now() - debut });
+  } catch (err) {
+    console.error(`🚨 Erreur ping-db (après ${Date.now() - debut}ms, retries inclus):`, err.message);
+    res.status(500).json({ status: 'error', message: err.message, duree_ms: Date.now() - debut });
+  }
+});
+
+// ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Serveur lancé sur le port ${PORT}`));
