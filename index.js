@@ -2307,11 +2307,15 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       }
     }
 
-    // 🛒 NOUVEAU : Détection "Panier Chaud" (Dès l'envoi du récapitulatif)
+// 🛒 NOUVEAU : Détection "Panier Chaud" unique par session
     if (reply.includes('Vous confirmez cette commande ?')) {
       if (merchant.numero_proprietaire) {
-        const textePanierChaud = `🛒 *PANIER CHAUD — ${merchant.nom_commerce}*\n\nLe bot vient d'envoyer un récapitulatif au client ${from}. S'il ne valide pas dans la minute ou semble inactif, n'hésitez pas à l'appeler pour conclure la vente !`;
-        sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, textePanierChaud).catch(() => {});
+        const signaturePanier = `${sessionId}:${reply}`;
+        if (profile?.dernier_panier_chaud !== signaturePanier) {
+          const textePanierChaud = `🛒 *PANIER CHAUD — ${merchant.nom_commerce}*\n\nLe bot vient d'envoyer un récapitulatif au client ${from}. S'il ne valide pas ou tarde, n'hésite pas à l'appeler !`;
+          sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, textePanierChaud).catch(() => {});
+          await saveClientProfile(sessionId, { dernier_panier_chaud: signaturePanier });
+        }
       }
     }
     
