@@ -2133,6 +2133,101 @@ app.delete('/catalogue/:id', async (req, res) => {
   }
 });
 
+// ─── ESPACE CONVERSATIONS (ACCÈS MARCHAND VIA TOKEN) ──────────────────────────
+//
+// Portail lecture seule pour que le marchand consulte les échanges de son
+// propre bot avec ses clients, sans mot de passe : un lien unique par
+// marchand (dashboard.../conversations/{access_token}) suffit. Le token
+// n'est jamais le phone_number_id — colonne dédiée `merchants.access_token`
+// (uuid, généré automatiquement à la création du marchand).
+
+async function getMerchantByToken(token) {
+  const { data, error } = await supabase
+    .from('merchants')
+    .select('phone_number_id, nom_commerce, access_token')
+    .eq('access_token', token)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Erreur lecture merchant par token:', error.message);
+    return null;
+  }
+  return data;
+}
+
+// Liste des conversations du marchand, groupées par client (session_id),
+// triées par dernier message décroissant.
+app.get('/conversations/:token', async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    const merchant = await getMerchantByToken(token);
+    if (!merchant) return res.status(404).json({ error: 'Lien invalide' });
+
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('session_id, role, content, created_at')
+      .like('session_id', `${merchant.phone_number_id}:%`)
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    const parClient = {};
+    for (const msg of data || []) {
+      if (!parClient[msg.session_id]) {
+        parClient[msg.session_id] = {
+          session_id: msg.session_id,
+          numero_client: msg.session_id.split(':')[1] || msg.session_id,
+          dernier_message: msg.content,
+          dernier_role: msg.role,
+          dernier_horodatage: msg.created_at,
+        };
+      }
+    }
+
+    res.json({
+      nom_commerce: merchant.nom_commerce,
+      conversations: Object.values(parClient),
+    });
+  } catch (err) {
+    console.error('Erreur route /conversations/:token :', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Détail complet d'une conversation précise (un client donné), toujours
+// vérifié contre le token pour empêcher un marchand de lire les clients
+// d'un autre marchand en devinant un session_id.
+app.get('/conversations/:token/:sessionId', async (req, res) => {
+  const { token, sessionId } = req.params;
+
+  try {
+    const merchant = await getMerchantByToken(token);
+    if (!merchant) return res.status(404).json({ error: 'Lien invalide' });
+
+    if (!sessionId.startsWith(`${merchant.phone_number_id}:`)) {
+      return res.status(403).json({ error: 'Accès non autorisé à cette conversation' });
+    }
+
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('role, content, created_at')
+      .eq('session_id', sessionId)
+      .order('created_at', { ascending: true });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({
+      nom_commerce: merchant.nom_commerce,
+      numero_client: sessionId.split(':')[1] || sessionId,
+      messages: data || [],
+    });
+  } catch (err) {
+    console.error('Erreur route /conversations/:token/:sessionId :', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 // Réception des messages entrants — format Meta Cloud API (Semaine 2, Étape 2)
 app.post('/webhook', verifierSignatureMeta, async (req, res) => {
   // Meta attend une réponse 200 très rapide, sinon il considère l'envoi en échec
