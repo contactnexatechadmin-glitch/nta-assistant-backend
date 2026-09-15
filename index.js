@@ -120,8 +120,8 @@ const REGLE_PRECISION_EMOJI_PRODUIT =
 const REGLE_CONFIRMATION_COMMANDE =
   "\n\nIMPORTANT - Confirmation de commande : avant de pouvoir récapituler une commande, tu DOIS avoir obtenu du client ces 4 informations précises, jamais moins : (1) le produit, (2) le prix exact du produit tel qu'indiqué dans le catalogue (jamais un prix approximatif ou négocié sans validation via l'alerte prévue), (3) l'adresse de livraison, (4) le JOUR/DATE ET l'heure souhaités pour la livraison (jamais l'heure seule — demande toujours explicitement le jour si le client ne l'a donné que l'heure, ex : \"c'est pour aujourd'hui, demain, ou un autre jour ?\"). " +
   "Une fois ces 4 informations obtenues, fais un récapitulatif clair de CETTE commande précise — en incluant TOUJOURS le prix dans ce récapitulatif — puis termine TOUJOURS ta phrase par exactement : \"Vous confirmez cette commande ?\" (jamais reformulé autrement). " +
-  "Si le client répond ensuite positivement à cette question (oui, je confirme, d'accord, etc.) SANS apporter de correction ou changement au récapitulatif, commence OBLIGATOIREMENT ta réponse par exactement la phrase \"Commande confirmée !\" avant d'ajouter quoi que ce soit d'autre (même si le client enchaîne avec une autre question dans le même message). " +
-  "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas répondu positivement à la question de confirmation, s'il est en train de corriger/modifier sa commande, OU si le jour/date de livraison n'a pas été clairement précisé. " +
+  "Si le client répond ensuite positivement à cette question (oui, je confirme, d'accord, etc.) OU s'il donne une précision logistique (ex : \"appelez sur WhatsApp\", \"livrez avant 16h\") SANS annuler l'achat, commence OBLIGATOIREMENT ta réponse par exactement la phrase \"Commande confirmée !\" avant d'ajouter quoi que ce soit d'autre. " +
+  "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas validé (explicitement ou implicitement) la commande. " +
   "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
 
 const REGLE_ESCALADE =
@@ -2307,6 +2307,14 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       }
     }
 
+    // 🛒 NOUVEAU : Détection "Panier Chaud" (Dès l'envoi du récapitulatif)
+    if (reply.includes('Vous confirmez cette commande ?')) {
+      if (merchant.numero_proprietaire) {
+        const textePanierChaud = `🛒 *PANIER CHAUD — ${merchant.nom_commerce}*\n\nLe bot vient d'envoyer un récapitulatif au client ${from}. S'il ne valide pas dans la minute ou semble inactif, n'hésitez pas à l'appeler pour conclure la vente !`;
+        sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, textePanierChaud).catch(() => {});
+      }
+    }
+    
     // Détection de commande confirmée + alerte immédiate au marchand.
     // Contrairement à l'extraction de profil, on ATTEND ce résultat et on
     // logue clairement (🚨) en cas d'échec — une commande manquée est une
