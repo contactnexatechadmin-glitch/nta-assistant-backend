@@ -484,6 +484,38 @@ async function getMerchantsActifs() {
   return data || [];
 }
 
+/**
+ * Récupère les commerçants actifs et non suspendus, avec les champs
+ * nécessaires au calcul des jours restants (essai ou abonnement), pour la
+ * relance automatique à J-3.
+ */
+async function getMerchantsPourRelance() {
+  const { data, error } = await supabase
+    .from('merchants')
+    .select('phone_number_id, nom_commerce, numero_proprietaire, date_debut, essai, suspendu, actif')
+    .eq('actif', true)
+    .eq('suspendu', false);
+
+  if (error) {
+    console.error('Erreur récupération commerçants pour relance:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+/**
+ * Calcule le nombre de jours restants avant fin d'essai (7 jours) ou fin de
+ * cycle d'abonnement (1 mois), à partir de date_debut. Même logique que le
+ * dashboard (nta_dashboard_v13).
+ */
+function joursRestants(dateDebut, essai) {
+  const debut = new Date(dateDebut);
+  const fin = new Date(debut);
+  if (essai) fin.setDate(fin.getDate() + 7);
+  else fin.setMonth(fin.getMonth() + 1);
+  return Math.ceil((fin - new Date()) / 86400000);
+}
+
 // ─── CATALOGUE PRODUITS (TEXTE RICHE, SANS PHOTO) ─────────────────────────────
 //
 // Aucune image n'est stockée (ni Supabase Storage, ni Render). Chaque produit
@@ -749,6 +781,84 @@ async function sendRappelRechargeTemplate(fromPhoneNumberId, to, nomCommerce) {
     const errText = await response.text();
     console.error('Erreur envoi template rappel recharge Meta:', response.status, errText);
     throw new Error(`Meta API (template rappel recharge) a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Envoie le rappel de fin d'essai gratuit via le template Meta approuvé
+ * "relance_essai" (J-3 avant la fin des 7 jours d'essai).
+ */
+async function sendRelanceEssaiTemplate(fromPhoneNumberId, to, nomCommerce) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'template',
+      template: {
+        name: 'relance_essai',
+        language: { code: 'fr' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nettoyerParametreTemplate(nomCommerce) },
+          ],
+        }],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi template relance essai Meta:', response.status, errText);
+    throw new Error(`Meta API (template relance essai) a répondu ${response.status}: ${errText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Envoie le rappel de fin d'abonnement via le template Meta approuvé
+ * "relance_abonnement" (J-3 avant la fin du cycle mensuel).
+ */
+async function sendRelanceAbonnementTemplate(fromPhoneNumberId, to, nomCommerce) {
+  const toMeta = versFormatMeta(to);
+
+  const response = await fetch(`https://graph.facebook.com/v20.0/${fromPhoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: toMeta,
+      type: 'template',
+      template: {
+        name: 'relance_abonnement',
+        language: { code: 'fr' },
+        components: [{
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nettoyerParametreTemplate(nomCommerce) },
+          ],
+        }],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Erreur envoi template relance abonnement Meta:', response.status, errText);
+    throw new Error(`Meta API (template relance abonnement) a répondu ${response.status}: ${errText}`);
   }
 
   return response.json();
@@ -1734,6 +1844,51 @@ async function envoyerRappelsRechargeLigne() {
 // novembre) à 9h — équivaut à un envoi tous les 2 mois.
 cron.schedule('0 9 1 1,3,5,7,9,11 *', () => {
   envoyerRappelsRechargeLigne();
+});
+
+// ─── RELANCE FIN D'ESSAI / FIN D'ABONNEMENT (J-3) ─────────────────────────────
+//
+// Boucle sur chaque commerçant actif et non suspendu ; si le compte est
+// exactement à 3 jours de la fin (essai gratuit ou cycle d'abonnement), un
+// rappel est envoyé sur son numero_proprietaire — vérification quotidienne,
+// le déclenchement sur "=== 3" (et non "<= 3") évite naturellement les
+// doublons d'envoi.
+
+async function envoyerRelancesRenouvellement() {
+  console.log('--- Déclenchement des relances fin essai / fin abonnement ---');
+
+  const merchants = await getMerchantsPourRelance();
+  if (merchants.length === 0) {
+    console.log('Aucun commerçant éligible trouvé.');
+    return;
+  }
+
+  for (const merchant of merchants) {
+    const { phone_number_id, nom_commerce, numero_proprietaire, date_debut, essai } = merchant;
+
+    if (!numero_proprietaire || !date_debut) {
+      console.log(`Relance ignorée pour ${nom_commerce} : numero_proprietaire ou date_debut manquant.`);
+      continue;
+    }
+
+    if (joursRestants(date_debut, essai) !== 3) continue;
+
+    try {
+      if (essai) {
+        await sendRelanceEssaiTemplate(phone_number_id, numero_proprietaire, nom_commerce);
+      } else {
+        await sendRelanceAbonnementTemplate(phone_number_id, numero_proprietaire, nom_commerce);
+      }
+      console.log(`Relance ${essai ? 'essai' : 'abonnement'} envoyée avec succès pour ${nom_commerce} !`);
+    } catch (err) {
+      console.error(`Erreur relance pour ${nom_commerce} :`, err.message);
+    }
+  }
+}
+
+// Tous les jours à 9h.
+cron.schedule('0 9 * * *', () => {
+  envoyerRelancesRenouvellement();
 });
 
 // ─── SYSTEM PROMPTS ───────────────────────────────────────────────────────────
