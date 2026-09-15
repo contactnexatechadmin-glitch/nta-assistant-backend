@@ -2307,15 +2307,29 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       }
     }
 
-// 🛒 NOUVEAU : Détection "Panier Chaud" unique par session
+// 🛒 NOUVEAU : Détection "Panier Chaud" différée (délai de 5 min si pas de confirmation)
     if (reply.includes('Vous confirmez cette commande ?')) {
       if (merchant.numero_proprietaire) {
-        const signaturePanier = `${sessionId}:${reply}`;
-        if (profile?.dernier_panier_chaud !== signaturePanier) {
-          const textePanierChaud = `🛒 *PANIER CHAUD — ${merchant.nom_commerce}*\n\nLe bot vient d'envoyer un récapitulatif au client ${from}. S'il ne valide pas ou tarde, n'hésite pas à l'appeler !`;
-          sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, textePanierChaud).catch(() => {});
-          await saveClientProfile(sessionId, { dernier_panier_chaud: signaturePanier });
+        // Annule un éventuel timer déjà en cours pour cette session
+        if (global.panierChaudTimers && global.panierChaudTimers[sessionId]) {
+          clearTimeout(global.panierChaudTimers[sessionId]);
         }
+        if (!global.panierChaudTimers) global.panierChaudTimers = {};
+
+        // Programme l'envoi de l'alerte après 5 minutes (300 000 ms)
+        global.panierChaudTimers[sessionId] = setTimeout(async () => {
+          const textePanierChaud = `🛒 *PANIER CHAUD (Relance) — ${merchant.nom_commerce}*\n\nLe client ${from} a reçu le récapitulatif il y a 5 min mais n'a pas encore validé. N'hésite pas à le contacter directement pour conclure !`;
+          sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, textePanierChaud).catch(() => {});
+          delete global.panierChaudTimers[sessionId];
+        }, 300000);
+      }
+    }
+
+    // Si la commande est confirmée par le client, on annule immédiatement le timer Panier Chaud
+    if (reply.includes('Commande confirmée !')) {
+      if (global.panierChaudTimers && global.panierChaudTimers[sessionId]) {
+        clearTimeout(global.panierChaudTimers[sessionId]);
+        delete global.panierChaudTimers[sessionId];
       }
     }
     
