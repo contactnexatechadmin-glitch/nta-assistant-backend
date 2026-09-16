@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NTA Assistant — Mes conversations</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+body { background: #F7F4EF; color: #0F2744; min-height: 100vh; padding: 1rem; }
+.wrap { max-width: 480px; margin: 0 auto; padding: 1rem 0; }
+
+.head { background: linear-gradient(135deg, #0F2744, #1a3a5c, #0e6655); border-radius: 14px; padding: 16px; margin-bottom: 1.2rem; }
+.head-title { font-size: 17px; font-weight: 700; color: #c9a227; letter-spacing: 0.03em; }
+.head-sub { font-size: 12px; color: rgba(255,255,255,0.65); margin-top: 3px; }
+
+.error-banner { display: none; background: #fdecea; border: 1px solid #e74c3c; border-radius: 12px; padding: 12px 14px; margin-bottom: 1.2rem; font-size: 13px; color: #c0392b; font-weight: 500; }
+.error-banner.show { display: block; }
+
+.loading { text-align: center; padding: 2rem; color: #9aabb8; font-size: 13px; }
+.empty { text-align: center; padding: 2rem; color: #9aabb8; font-size: 13px; background: #fff; border-radius: 14px; box-shadow: 0 2px 8px rgba(15,39,68,0.06); }
+
+/* ─── Liste des conversations ─── */
+#view-list { display: none; }
+.conv-list { display: flex; flex-direction: column; gap: 8px; }
+.conv-item { display: flex; align-items: center; gap: 10px; background: #fff; border-radius: 12px; padding: 12px; box-shadow: 0 2px 8px rgba(15,39,68,0.06); cursor: pointer; transition: box-shadow 0.15s; }
+.conv-item:hover { box-shadow: 0 2px 12px rgba(15,39,68,0.12); }
+.conv-avatar { width: 38px; height: 38px; border-radius: 50%; background: #F0EEE9; display: flex; align-items: center; justify-content: center; font-size: 15px; color: #6b7c93; flex-shrink: 0; }
+.conv-info { flex: 1; min-width: 0; }
+.conv-numero { font-weight: 600; font-size: 13.5px; color: #0F2744; }
+.conv-apercu { font-size: 12px; color: #6b7c93; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-heure { font-size: 11px; color: #9aabb8; flex-shrink: 0; white-space: nowrap; }
+
+/* ─── Détail d'une conversation ─── */
+#view-thread { display: none; }
+.thread-header { display: flex; align-items: center; gap: 10px; background: #fff; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(15,39,68,0.06); }
+.thread-back { background: none; border: none; font-size: 18px; color: #6b7c93; cursor: pointer; padding: 4px; }
+.thread-avatar { width: 34px; height: 34px; border-radius: 50%; background: #F0EEE9; display: flex; align-items: center; justify-content: center; font-size: 14px; color: #6b7c93; flex-shrink: 0; }
+.thread-numero { font-weight: 600; font-size: 13.5px; color: #0F2744; }
+
+.thread-body { display: flex; flex-direction: column; gap: 10px; padding-bottom: 1rem; }
+.day-sep { align-self: center; font-size: 11px; color: #9aabb8; background: #fff; padding: 3px 12px; border-radius: 10px; margin: 6px 0; }
+
+.bubble-row { display: flex; flex-direction: column; max-width: 78%; }
+.bubble-row.client { align-self: flex-start; }
+.bubble-row.bot { align-self: flex-end; }
+.bubble { border-radius: 14px; padding: 9px 13px; font-size: 13.5px; line-height: 1.5; }
+.bubble-row.client .bubble { background: #fff; border-bottom-left-radius: 3px; color: #0F2744; }
+.bubble-row.bot .bubble { background: linear-gradient(135deg, #0F2744, #0e6655); border-bottom-right-radius: 3px; color: #fff; }
+.bubble-time { font-size: 10.5px; color: #9aabb8; margin-top: 3px; padding: 0 4px; }
+.bubble-row.bot .bubble-time { text-align: right; }
+
+.readonly-note { display: flex; align-items: center; gap: 6px; justify-content: center; font-size: 11px; color: #9aabb8; padding: 10px 0 4px; }
+
+/* Masquer le badge et l'overlay Netlify */
+#netlify-badge,
+[data-netlify-drawer],
+iframe[src*="netlify"],
+div[class*="netlify"],
+netlify-drawer,
+[id*="netlify"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div class="head-title">NTA Assistant</div>
+    <div class="head-sub" id="head-sub">Vos conversations avec vos clients</div>
+  </div>
+
+  <div class="error-banner" id="error-banner"></div>
+  <div class="loading" id="loading">Chargement de vos conversations…</div>
+  <div class="empty" id="empty" style="display:none">Aucune conversation pour l'instant.</div>
+
+  <div id="view-list">
+    <div class="conv-list" id="conv-list"></div>
+  </div>
+
+  <div id="view-thread">
+    <div class="thread-header">
+      <button class="thread-back" onclick="retourListe()">←</button>
+      <div class="thread-avatar">👤</div>
+      <div class="thread-numero" id="thread-numero"></div>
+    </div>
+    <div class="thread-body" id="thread-body"></div>
+    <div class="readonly-note">🔒 Lecture seule — vos échanges uniquement</div>
+  </div>
+</div>
+
+<script>
+// Suppression dynamique du badge Netlify
+setInterval(() => {
+  const elements = document.querySelectorAll('[id*="netlify"], [class*="netlify"], iframe[src*="netlify"], netlify-drawer');
+  elements.forEach(el => el.remove());
+}, 200);
+
+// Remplace par l'URL de ton backend Render (identique au dashboard).
+const API_BASE = 'https://nta-assistant-backend.onrender.com';
+
+const params = new URLSearchParams(window.location.search);
+const TOKEN = params.get('token');
+
+const elLoading = document.getElementById('loading');
+const elEmpty = document.getElementById('empty');
+const elError = document.getElementById('error-banner');
+const elViewList = document.getElementById('view-list');
+const elViewThread = document.getElementById('view-thread');
+const elConvList = document.getElementById('conv-list');
+const elHeadSub = document.getElementById('head-sub');
+const elThreadNumero = document.getElementById('thread-numero');
+const elThreadBody = document.getElementById('thread-body');
+
+let conversationsCache = [];
+
+function afficherErreur(message) {
+  elError.textContent = message;
+  elError.classList.add('show');
+  elLoading.style.display = 'none';
+}
+
+function formatHeure(iso) {
+  const d = new Date(iso);
+  const auj = new Date();
+  const memeJour = d.toDateString() === auj.toDateString();
+  return memeJour
+    ? d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+}
+
+async function chargerListe() {
+  if (!TOKEN) {
+    afficherErreur('Lien invalide — aucun accès trouvé. Contacte NTA Assistant si le problème persiste.');
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/conversations/${TOKEN}`);
+    if (!res.ok) {
+      afficherErreur(res.status === 404
+        ? 'Lien invalide ou expiré. Contacte NTA Assistant pour un nouveau lien.'
+        : 'Impossible de joindre le serveur. Réessaie dans un instant.');
+      return;
+    }
+    const data = await res.json();
+    elLoading.style.display = 'none';
+    elHeadSub.textContent = data.nom_commerce ? `${data.nom_commerce} — vos conversations clients` : 'Vos conversations avec vos clients';
+    conversationsCache = data.conversations || [];
+
+    if (!conversationsCache.length) {
+      elEmpty.style.display = 'block';
+      return;
+    }
+
+    elViewList.style.display = 'block';
+    conversationsCache.forEach(c => {
+      const item = document.createElement('div');
+      item.className = 'conv-item';
+      item.onclick = () => ouvrirConversation(c.session_id, c.numero_client);
+      item.innerHTML = `
+        <div class="conv-avatar">👤</div>
+        <div class="conv-info">
+          <div class="conv-numero">${c.numero_client}</div>
+          <div class="conv-apercu">${(c.dernier_message || '').replace(/</g, '&lt;')}</div>
+        </div>
+        <div class="conv-heure">${formatHeure(c.dernier_horodatage)}</div>`;
+      elConvList.appendChild(item);
+    });
+  } catch (err) {
+    afficherErreur('Impossible de joindre le serveur. Réessaie dans un instant.');
+  }
+}
+
+async function ouvrirConversation(sessionId, numeroClient) {
+  elViewList.style.display = 'none';
+  elViewThread.style.display = 'block';
+  elThreadNumero.textContent = numeroClient;
+  elThreadBody.innerHTML = '<div class="loading">Chargement…</div>';
+
+  try {
+    const res = await fetch(`${API_BASE}/conversations/${TOKEN}/${sessionId}`);
+    if (!res.ok) {
+      elThreadBody.innerHTML = '<div class="loading">Impossible de charger cette conversation.</div>';
+      return;
+    }
+    const data = await res.json();
+    elThreadBody.innerHTML = '';
+
+    let dernierJour = null;
+    (data.messages || []).forEach(msg => {
+      const jour = new Date(msg.created_at).toLocaleDateString('fr-FR');
+      if (jour !== dernierJour) {
+        const sep = document.createElement('div');
+        sep.className = 'day-sep';
+        sep.textContent = jour;
+        elThreadBody.appendChild(sep);
+        dernierJour = jour;
+      }
+
+      const row = document.createElement('div');
+      row.className = 'bubble-row ' + (msg.role === 'user' ? 'client' : 'bot');
+      row.innerHTML = `
+        <div class="bubble">${(msg.content || '').replace(/</g, '&lt;')}</div>
+        <div class="bubble-time">${formatHeure(msg.created_at)}</div>`;
+      elThreadBody.appendChild(row);
+    });
+  } catch (err) {
+    elThreadBody.innerHTML = '<div class="loading">Impossible de charger cette conversation.</div>';
+  }
+}
+
+function retourListe() {
+  elViewThread.style.display = 'none';
+  elViewList.style.display = 'block';
+}
+
+chargerListe();
+</script>
+</body>
+</html>
+
