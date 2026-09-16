@@ -124,6 +124,11 @@ const REGLE_CONFIRMATION_COMMANDE =
   "N'écris JAMAIS \"Commande confirmée !\" si le client n'a pas validé (explicitement ou implicitement) la commande. " +
   "IMPORTANT - Ne jamais mélanger les commandes : si le client a déjà confirmé une commande plus tôt dans la conversation, ne la reprends jamais dans le récapitulatif d'une NOUVELLE commande. Chaque commande se traite, se récapitule et se confirme séparément.";
 
+const REGLE_INTENTION_ACHAT_PRECOCE =
+  "\n\nIMPORTANT - Intention d'achat précoce : quand tu présentes un produit précis avec son prix et que le client montre un intérêt clair pour CE produit spécifique (pas une simple question générale de curiosité), et qu'il te reste des détails supplémentaires à demander avant de pouvoir récapituler (taille, couleur, quantité, ou toute autre précision propre au produit), termine ta réponse par exactement la question : \"Vous souhaitez le commander ?\" avant de continuer à demander ces détails. " +
+  "Si le client répond positivement (oui, je le veux, ça m'intéresse, etc.), continue normalement la collecte des informations manquantes (taille/couleur/quantité puis adresse et jour/heure) requises par la règle de confirmation de commande. " +
+  "N'utilise cette question que lorsque des détails supplémentaires restent réellement à collecter avant la commande — si tu as déjà tout ce qu'il te faut pour récapituler (produit, prix, adresse, jour/heure), passe directement au récapitulatif habituel sans poser cette question intermédiaire.";
+
 const REGLE_ESCALADE =
   "\n\nIMPORTANT - Honnêteté et escalade vers le commerçant : tu es un assistant 100% autonome, aucun humain ne reprend la conversation derrière toi. Ne prétends JAMAIS \"vérifier le stock\", \"consulter l'équipe\" ou \"revenir vers le client\" si tu ne peux pas le faire toi-même — c'est un mensonge. " +
   "Dans les cas suivants uniquement : (1) une information précise manque dans tes instructions ET n'est PAS liée à un article absent du catalogue (ex : condition de livraison non précisée, détail non fourni — voir exception ci-dessous), (2) le client fait une réclamation ou signale un litige, (3) le client négocie un prix ou une condition hors de ce que tu es autorisé à accepter — réponds avec empathie sur le fond, PUIS termine ta réponse par exactement cette phrase, mot pour mot : \"Notre équipe est informée et reviendra vers vous si besoin.\" " +
@@ -2341,7 +2346,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_INTENTION_ACHAT_PRECOCE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
 
@@ -2402,8 +2407,33 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       }
     }
 
-// 🛒 NOUVEAU : Détection "Panier Chaud" différée (délai de 5 min si pas de confirmation)
+// 🔥 NOUVEAU : Détection "Intention d'achat précoce" différée (délai de 10 min
+    // si le client dit oui à "Vous souhaitez le commander ?" mais ne finalise pas)
+    if (reply.includes('Vous souhaitez le commander ?')) {
+      if (merchant.numero_proprietaire) {
+        if (global.intentionAchatTimers && global.intentionAchatTimers[sessionId]) {
+          clearTimeout(global.intentionAchatTimers[sessionId]);
+        }
+        if (!global.intentionAchatTimers) global.intentionAchatTimers = {};
+
+        // Programme l'envoi de l'alerte après 10 minutes (600 000 ms)
+        global.intentionAchatTimers[sessionId] = setTimeout(async () => {
+          const texteIntentionAchat = `🔥 *INTÉRÊT CLIENT (Relance) — ${merchant.nom_commerce}*\n\nLe client ${from} a dit vouloir commander il y a 10 min mais n'a pas encore donné les détails nécessaires (taille, adresse...). N'hésite pas à le rappeler directement pour conclure !`;
+          sendAlerteTemplate(merchant.phone_number_id, merchant.numero_proprietaire, merchant.nom_commerce, texteIntentionAchat).catch(() => {});
+          delete global.intentionAchatTimers[sessionId];
+        }, 600000);
+      }
+    }
+
+    // 🛒 NOUVEAU : Détection "Panier Chaud" différée (délai de 5 min si pas de confirmation)
     if (reply.includes('Vous confirmez cette commande ?')) {
+      // Le client a progressé jusqu'au récapitulatif : le stade "intention précoce"
+      // est dépassé, on annule ce timer pour ne pas déclencher une relance en double.
+      if (global.intentionAchatTimers && global.intentionAchatTimers[sessionId]) {
+        clearTimeout(global.intentionAchatTimers[sessionId]);
+        delete global.intentionAchatTimers[sessionId];
+      }
+
       if (merchant.numero_proprietaire) {
         // Annule un éventuel timer déjà en cours pour cette session
         if (global.panierChaudTimers && global.panierChaudTimers[sessionId]) {
@@ -2420,8 +2450,13 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
       }
     }
 
-    // Si la commande est confirmée par le client, on annule immédiatement le timer Panier Chaud
+    // Si la commande est confirmée par le client, on annule immédiatement tous
+    // les timers de relance en cours (intention précoce + panier chaud)
     if (reply.includes('Commande confirmée !')) {
+      if (global.intentionAchatTimers && global.intentionAchatTimers[sessionId]) {
+        clearTimeout(global.intentionAchatTimers[sessionId]);
+        delete global.intentionAchatTimers[sessionId];
+      }
       if (global.panierChaudTimers && global.panierChaudTimers[sessionId]) {
         clearTimeout(global.panierChaudTimers[sessionId]);
         delete global.panierChaudTimers[sessionId];
@@ -2480,7 +2515,7 @@ app.post('/demo', async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_INTENTION_ACHAT_PRECOCE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
     const replyBrutDemo = await askClaude(historiquePourAppel, systemPrompt);
