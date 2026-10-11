@@ -172,6 +172,12 @@ const REGLE_PHOTO_PRODUIT =
   "N'ajoute JAMAIS cette ligne dans les autres cas : jamais pour un produit disponible normalement, jamais si tu mentionnes ou listes plusieurs produits, jamais si tu n'es pas sûr du nom exact. " +
   "Cette ligne est un signal technique invisible pour le client (elle est retirée avant l'envoi) : ne l'explique jamais, n'y fais jamais référence dans ta phrase, et n'écris jamais son contenu ailleurs que sur cette ligne finale dédiée.";
 
+const REGLE_LONGUEUR_REPONSE =
+  "\n\nIMPORTANT - Longueur des réponses (PRIORITÉ sur le style) : tu écris sur WhatsApp à des clients qui n'aiment pas lire. Réponds comme un vendeur au comptoir : 1 à 2 phrases courtes, 3 au maximum, une seule idée par message, une seule question à la fois. " +
+  "Va droit au but (prix, disponibilité, prochaine étape) : pas d'introduction, pas de reformulation de la question du client, pas de phrase de politesse superflue, pas de conclusion. Ne donne que l'information demandée — le reste viendra si le client le demande. " +
+  "Salutation : un mot suffit, collé à la réponse (ex : \"Bonjour ! Oui, disponible à 15 000 FCFA. Quelle taille ?\"). Une proposition complémentaire, si elle a lieu, tient en une seule phrase. " +
+  "EXCEPTIONS — jamais raccourcies ni modifiées, elles restent mot pour mot : le récapitulatif de commande et sa phrase \"Vous confirmez cette commande ?\", la phrase \"Commande confirmée !\" en début de réponse (suivie d'une phrase courte maximum), la phrase d'escalade exacte, la question \"Vous souhaitez le commander ?\", et les lignes techniques ARTICLE_NON_TROUVE / PHOTO_PRODUIT. Un récapitulatif reste complet, mais sans phrase de remplissage autour.";
+
 // ─── NORMALISATION DES NUMÉROS IVOIRIENS ──────────────────────────────────────
 //
 // Depuis le 31 janvier 2021, la Côte d'Ivoire est passée de 8 à 10 chiffres.
@@ -2346,7 +2352,7 @@ app.post('/webhook', verifierSignatureMeta, async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_INTENTION_ACHAT_PRECOCE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_INTENTION_ACHAT_PRECOCE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_PHOTO_PRODUIT + REGLE_NUMEROTATION + ligneStatutTemps + REGLE_LONGUEUR_REPONSE;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
 
@@ -2515,7 +2521,7 @@ app.post('/demo', async (req, res) => {
     const profileLine = formatProfileForPrompt(profile);
     const catalogueLine = formatCatalogueForPrompt(catalogue);
     const ligneStatutTemps = formatDateHeureAbidjan();
-    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_INTENTION_ACHAT_PRECOCE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps;
+    const systemPrompt = basePrompt + REGLE_FORMATAGE_WHATSAPP + REGLE_EMOTICONES + REGLE_CONFIRMATION_COMMANDE + REGLE_INTENTION_ACHAT_PRECOCE + REGLE_ESCALADE + REGLE_POLITESSE_SALUTATION + REGLE_PAS_DE_LISTE_CATALOGUE + profileLine + catalogueLine + REGLE_CATALOGUE_TEMPS_REEL + REGLE_DEMANDE_PHOTO_AVANT_CONCLURE + REGLE_ALTERNATIVE_RUPTURE + REGLE_NUMEROTATION + ligneStatutTemps + REGLE_LONGUEUR_REPONSE;
 
     const historiquePourAppel = history.slice(-MAX_HISTORY_ENVOYE_A_CLAUDE);
     const replyBrutDemo = await askClaude(historiquePourAppel, systemPrompt);
