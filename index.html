@@ -131,6 +131,12 @@ function afficherErreur(message) {
   elLoading.style.display = 'none';
 }
 
+function formaterTexte(texte) {
+  const echappe = (texte || '').replace(/</g, '&lt;');
+  // Mise en forme WhatsApp : *gras*
+  return echappe.replace(/\*(\S(?:[^*]*\S)?)\*/g, '<strong>$1</strong>');
+}
+
 function formatHeure(iso) {
   const d = new Date(iso);
   const auj = new Date();
@@ -173,7 +179,7 @@ async function chargerListe() {
         <div class="conv-avatar">👤</div>
         <div class="conv-info">
           <div class="conv-numero">${c.numero_client}</div>
-          <div class="conv-apercu">${(c.dernier_message || '').replace(/</g, '&lt;')}</div>
+          <div class="conv-apercu">${formaterTexte(c.dernier_message)}</div>
         </div>
         <div class="conv-heure">${formatHeure(c.dernier_horodatage)}</div>`;
       elConvList.appendChild(item);
@@ -213,7 +219,7 @@ async function ouvrirConversation(sessionId, numeroClient) {
       const row = document.createElement('div');
       row.className = 'bubble-row ' + (msg.role === 'user' ? 'client' : 'bot');
       row.innerHTML = `
-        <div class="bubble">${(msg.content || '').replace(/</g, '&lt;')}</div>
+        <div class="bubble">${formaterTexte(msg.content)}</div>
         <div class="bubble-time">${formatHeure(msg.created_at)}</div>`;
       elThreadBody.appendChild(row);
     });
