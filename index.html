@@ -32,7 +32,16 @@ body { background: #F7F4EF; color: #0F2744; min-height: 100vh; padding: 1rem; }
 
 /* ─── Détail d'une conversation ─── */
 #view-thread { display: none; }
-.thread-header { display: flex; align-items: center; gap: 10px; background: #fff; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(15,39,68,0.06); position: sticky; top: 1rem; z-index: 10; }
+body.thread-open { padding-top: 0; }
+body.thread-open .wrap { padding-top: 64px; }
+.thread-header {
+  display: flex; align-items: center; gap: 10px;
+  background: #ffffff; border-radius: 0; margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(15,39,68,0.10);
+  position: fixed; top: 0; left: 0; right: 0;
+  padding: 12px max(16px, calc((100vw - 480px) / 2 + 16px));
+  z-index: 100;
+}
 .thread-back { background: none; border: none; font-size: 18px; color: #6b7c93; cursor: pointer; padding: 4px; }
 .thread-avatar { width: 34px; height: 34px; border-radius: 50%; background: #F0EEE9; display: flex; align-items: center; justify-content: center; font-size: 14px; color: #6b7c93; flex-shrink: 0; }
 .thread-numero { font-weight: 600; font-size: 13.5px; color: #0F2744; }
@@ -177,6 +186,7 @@ async function chargerListe() {
 async function ouvrirConversation(sessionId, numeroClient) {
   elViewList.style.display = 'none';
   elViewThread.style.display = 'block';
+  document.body.classList.add('thread-open');
   elThreadNumero.textContent = numeroClient;
   elThreadBody.innerHTML = '<div class="loading">Chargement…</div>';
 
@@ -220,6 +230,7 @@ async function ouvrirConversation(sessionId, numeroClient) {
 function retourListe() {
   elViewThread.style.display = 'none';
   elViewList.style.display = 'block';
+  document.body.classList.remove('thread-open');
 }
 
 chargerListe();
