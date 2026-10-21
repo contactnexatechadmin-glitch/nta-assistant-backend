@@ -207,6 +207,11 @@ async function ouvrirConversation(sessionId, numeroClient) {
         <div class="bubble-time">${formatHeure(msg.created_at)}</div>`;
       elThreadBody.appendChild(row);
     });
+
+    // Ouvre la conversation directement sur le dernier message (comportement WhatsApp).
+    requestAnimationFrame(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
   } catch (err) {
     elThreadBody.innerHTML = '<div class="loading">Impossible de charger cette conversation.</div>';
   }
